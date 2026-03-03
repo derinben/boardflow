@@ -153,4 +153,3 @@ ingestion/load.py → Postgres (bgg schema)
 **No games need stats refresh**
 - All stats are up to date (< 7 days old)
 - Lower `BGG_STATS_MAX_AGE_DAYS` to force refresh
-

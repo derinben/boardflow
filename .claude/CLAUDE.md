@@ -4,10 +4,6 @@
 - ALWAYS use `loguru` for all logging. Never use Python's built-in `logging` module or `print` statements for debugging.
 - Import pattern: `from loguru import logger`
 
-## Changelog
-- ALWAYS update docs/CHANGELOG.md when making user-facing changes
-- ASK for confirmation before writing to docs/CHANGELOG.md — never auto-update it
-
 ## Documentation
 - Extra docs go ONLY under /docs
 - ALWAYS ask user for confirmation before creating or modifying any file under /docs
