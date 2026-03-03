@@ -37,12 +37,26 @@ class BGGClient:
     Args:
         base_url:      API base URL (read from BGG_BASE_URL env var via caller).
         request_delay: Seconds to sleep between consecutive batches.
+        api_token:     Optional bearer token for authentication (read from BGG_API_TOKEN).
     """
 
-    def __init__(self, base_url: str, request_delay: float = 5.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        request_delay: float = 5.0,
+        api_token: str | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._request_delay = request_delay
-        self._http = httpx.Client(timeout=30.0)
+        self._api_token = api_token
+
+        # Set up HTTP client with optional authorization header
+        headers = {}
+        if self._api_token:
+            headers["Authorization"] = f"Bearer {self._api_token}"
+            logger.debug("BGGClient using bearer token authentication")
+
+        self._http = httpx.Client(timeout=30.0, headers=headers)
         logger.debug(
             f"BGGClient initialised (base_url={self._base_url}, delay={self._request_delay}s)"
         )
@@ -84,11 +98,15 @@ class BGGClient:
 
         for i, batch in enumerate(batches):
             if i > 0:
-                logger.debug(f"Rate-limit sleep {self._request_delay}s before batch {i + 1}")
+                logger.debug(
+                    f"Rate-limit sleep {self._request_delay}s before batch {i + 1}"
+                )
                 time.sleep(self._request_delay)
 
             xml_bytes = self._fetch_batch(batch, include_stats=include_stats)
-            logger.debug(f"Batch {i + 1}/{len(batches)} returned {len(xml_bytes):,} bytes")
+            logger.debug(
+                f"Batch {i + 1}/{len(batches)} returned {len(xml_bytes):,} bytes"
+            )
             yield xml_bytes
 
     # ------------------------------------------------------------------
@@ -109,7 +127,9 @@ class BGGClient:
             params["stats"] = "1"
 
         url = f"{self._base_url}/thing"
-        logger.debug(f"GET {url} ids={id_str[:60]}{'...' if len(id_str) > 60 else ''}")
+        logger.debug(
+            f"GET {url} ids={id_str[:60]}{'...' if len(id_str) > 60 else ''}"
+        )
 
         response = self._http.get(url, params=params)
         response.raise_for_status()
@@ -125,3 +145,97 @@ def _chunks(lst: List, size: int) -> Generator[List, None, None]:
     """Split list into successive chunks of at most `size` items."""
     for i in range(0, len(lst), size):
         yield lst[i : i + size]
+
+
+# ---------------------------------------------------------------------------
+# Test main
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """Test the BGG API client with a few popular game IDs.
+
+    Usage:
+        python -m ingestion.client
+        # Or with environment variables:
+        BGG_BASE_URL=https://boardgamegeek.com/xmlapi2 python -m ingestion.client
+    """
+    import os
+    import sys
+
+    # Sample game IDs (top-ranked games as of 2024)
+    # 224517 = Brass: Birmingham
+    # 342942 = Ark Nova
+    # 161936 = Pandemic Legacy: Season 1
+    test_game_ids = [224517, 342942, 161936]
+
+    base_url = os.environ.get(
+        "BGG_BASE_URL", "https://boardgamegeek.com/xmlapi2"
+    )
+    request_delay = float(os.environ.get("BGG_REQUEST_DELAY_SECONDS", "5"))
+    api_token = os.environ.get("BGG_API_TOKEN")
+
+    logger.info("=" * 70)
+    logger.info("BGG API Client Test")
+    logger.info("=" * 70)
+    logger.info(f"Base URL: {base_url}")
+    logger.info(f"Request delay: {request_delay}s")
+    logger.info(
+        f"API token: {'***' + api_token[-4:] if api_token else 'Not set'}"
+    )
+    logger.info(f"Test game IDs: {test_game_ids}")
+    logger.info("")
+
+    try:
+        with BGGClient(
+            base_url=base_url, request_delay=request_delay, api_token=api_token
+        ) as client:
+            # Test 1: Fetch without stats
+            logger.info("Test 1: Fetching game metadata (no stats)")
+            for i, xml_bytes in enumerate(
+                client.fetch_things_raw(test_game_ids, include_stats=False)
+            ):
+                logger.info(
+                    f"  Batch {i + 1}: Received {len(xml_bytes):,} bytes"
+                )
+                # Parse and show a snippet
+                xml_str = xml_bytes.decode("utf-8")
+                if "<item" in xml_str:
+                    logger.info(
+                        f"  ✓ Valid XML response (contains <item> tags)"
+                    )
+                else:
+                    logger.warning(f"  ⚠️  Unexpected XML format")
+
+            logger.info("")
+
+            # Test 2: Fetch with stats
+            logger.info("Test 2: Fetching game metadata + stats")
+            for i, xml_bytes in enumerate(
+                client.fetch_things_raw(test_game_ids, include_stats=True)
+            ):
+                logger.info(
+                    f"  Batch {i + 1}: Received {len(xml_bytes):,} bytes"
+                )
+                xml_str = xml_bytes.decode("utf-8")
+                if "<statistics" in xml_str:
+                    logger.info(
+                        f"  ✓ Stats included (contains <statistics> tags)"
+                    )
+                else:
+                    logger.warning(f"  ⚠️  Stats not found in response")
+
+        logger.info("")
+        logger.info("=" * 70)
+        logger.info("✓ All tests passed! BGG API is working correctly.")
+        logger.info("=" * 70)
+
+    except Exception as exc:
+        logger.error("=" * 70)
+        logger.error(f"✗ Test failed: {exc}")
+        logger.error("=" * 70)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

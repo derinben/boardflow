@@ -208,6 +208,41 @@ def get_ingested_game_ids(session: Session) -> List[int]:
     return ids
 
 
+def get_game_ids_needing_stats_refresh(session: Session, max_age_days: int) -> List[int]:
+    """Return game IDs where stats are missing or older than threshold.
+
+    Args:
+        session: Active SQLAlchemy session.
+        max_age_days: Only return games where last stats snapshot is older than this.
+
+    Returns:
+        Sorted list of game IDs needing stats refresh.
+    """
+    rows = session.execute(
+        text("""
+            SELECT g.id
+            FROM bgg.games g
+            LEFT JOIN LATERAL (
+                SELECT fetched_at
+                FROM bgg.game_stats
+                WHERE game_id = g.id
+                ORDER BY fetched_at DESC
+                LIMIT 1
+            ) latest_stats ON true
+            WHERE latest_stats.fetched_at IS NULL
+               OR latest_stats.fetched_at < NOW() - INTERVAL ':days days'
+            ORDER BY g.id
+        """),
+        {"days": max_age_days},
+    ).fetchall()
+    ids = [row[0] for row in rows]
+    logger.info(
+        f"Found {len(ids)} games needing stats refresh "
+        f"(missing or older than {max_age_days} days)"
+    )
+    return ids
+
+
 def _insert_game_stat(session: Session, stats: GameStats) -> None:
     session.execute(
         text("""

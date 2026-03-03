@@ -1,13 +1,16 @@
 """BGG CSV data dump seeder.
 
-Downloads the BGG board game rankings CSV dump and returns the top-N
-game IDs sorted by rank (ascending). This is the cheapest way to get
+Loads the BGG board game rankings CSV dump (from URL or local file) and returns
+the top-N game IDs sorted by rank (ascending). This is the cheapest way to get
 a quality-ordered list of game IDs for the initial ingestion.
 
 BGG CSV columns: id, rank, bggrating, avgrating, name
 """
 
 import io
+import os
+from datetime import datetime
+from pathlib import Path
 from typing import List
 
 import httpx
@@ -15,31 +18,85 @@ import pandas as pd
 from loguru import logger
 
 
-def fetch_ranked_game_ids(csv_url: str, limit: int) -> List[int]:
-    """Download the BGG ranks CSV and return the top `limit` game IDs by rank.
+def _validate_csv_freshness(file_path: Path) -> None:
+    """Check CSV file age and warn if stale.
+
+    Reads BGG_CSV_MAX_AGE_HOURS env var (default: 24) and compares
+    against file modification time. Logs a warning if file is older
+    than threshold, but does not raise an error.
 
     Args:
-        csv_url: URL of the BGG bg_ranks CSV dump.
-        limit:   Maximum number of game IDs to return.
+        file_path: Path to the CSV file to validate.
+    """
+    max_age_hours = float(os.environ.get("BGG_CSV_MAX_AGE_HOURS", "24"))
+
+    modified_time = datetime.fromtimestamp(file_path.stat().st_mtime)
+    age = datetime.now() - modified_time
+    age_hours = age.total_seconds() / 3600
+
+    logger.info(
+        f"CSV file age: {age_hours:.1f} hours "
+        f"(last modified: {modified_time.strftime('%Y-%m-%d %H:%M:%S')})"
+    )
+
+    if age_hours > max_age_hours:
+        logger.warning(
+            f"⚠️  CSV file is {age_hours:.1f} hours old "
+            f"(threshold: {max_age_hours} hours) - consider refreshing"
+        )
+
+
+def fetch_ranked_game_ids(csv_source: str, limit: int) -> List[int]:
+    """Load the BGG ranks CSV and return the top `limit` game IDs by rank.
+
+    Args:
+        csv_source: URL of the BGG bg_ranks CSV dump, or local file path.
+        limit:      Maximum number of game IDs to return.
 
     Returns:
         List of BGG game IDs ordered by ascending rank (best first).
 
     Raises:
-        httpx.HTTPStatusError: If the CSV download fails.
+        httpx.HTTPStatusError: If the CSV download fails (URL source).
+        FileNotFoundError: If the local file doesn't exist (file source).
         ValueError: If `limit` is not a positive integer.
     """
     if limit < 1:
         raise ValueError(f"limit must be >= 1, got {limit}")
 
-    logger.info(f"Downloading BGG CSV dump from {csv_url}")
-    response = httpx.get(csv_url, follow_redirects=True, timeout=60.0)
-    response.raise_for_status()
+    # Determine if source is a URL or local file path
+    is_url = csv_source.startswith(("http://", "https://"))
 
-    logger.debug(f"CSV download complete, {len(response.content):,} bytes")
+    if is_url:
+        logger.info(f"Downloading BGG CSV dump from {csv_source}")
+
+        # Get token from environment variable (if needed for authentication)
+        token = os.getenv("BGG_API_TOKEN")
+
+        response = httpx.get(csv_source, follow_redirects=True, timeout=60.0)
+        response.raise_for_status()
+
+        logger.debug(f"CSV download complete, {len(response.content):,} bytes")
+        csv_data = io.StringIO(response.text)
+    else:
+        # Treat as local file path
+        file_path = Path(csv_source)
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"BGG_CSV_LOCAL_PATH is set but file does not exist: {csv_source}"
+            )
+
+        logger.info(f"Reading BGG CSV dump from local file: {csv_source}")
+
+        # Validate file freshness
+        _validate_csv_freshness(file_path)
+
+        file_size = file_path.stat().st_size
+        logger.debug(f"File size: {file_size:,} bytes")
+        csv_data = str(file_path)
 
     df = pd.read_csv(
-        io.StringIO(response.text),
+        csv_data,
         usecols=["id", "rank"],
         dtype={"id": "Int64", "rank": "Int64"},
     )
@@ -49,5 +106,20 @@ def fetch_ranked_game_ids(csv_url: str, limit: int) -> List[int]:
     df = df.sort_values("rank").head(limit)
 
     game_ids: List[int] = df["id"].astype(int).tolist()
-    logger.info(f"Selected {len(game_ids)} game IDs (rank 1 to {df['rank'].max()})")
+    logger.info(
+        f"Selected {len(game_ids)} game IDs (rank 1 to {df['rank'].max()})"
+    )
     return game_ids
+
+
+if __name__ == "__main__":
+    # Example usage - supports both URLs and local file paths
+    # Use local CSV file (preferred if manually downloaded):
+    csv_source = os.getenv("BGG_CSV_LOCAL_PATH", "data/bg_ranks.csv")
+
+    # Or use URL (if authentication works):
+    # csv_source = os.getenv("BGG_CSV_DUMP_URL", "https://boardgamegeek.com/data_dumps/bg_ranks")
+
+    TOP_N = 100
+    ids = fetch_ranked_game_ids(csv_source, TOP_N)
+    print(ids)

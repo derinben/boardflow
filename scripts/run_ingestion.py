@@ -39,7 +39,11 @@ load_dotenv()
 
 from ingestion.client import BGGClient
 from ingestion.csv_seed import fetch_ranked_game_ids
-from ingestion.load import get_ingested_game_ids, load_game_info, load_game_stats
+from ingestion.load import (
+    get_game_ids_needing_stats_refresh,
+    load_game_info,
+    load_game_stats,
+)
 from ingestion.transform import parse_game_info, parse_game_stats
 
 
@@ -71,7 +75,7 @@ def run_info_pipeline(
     Args:
         client:  Initialised BGGClient.
         session: Active database session.
-        csv_url: URL of the BGG bg_ranks CSV dump.
+        csv_url: URL or local file path of the BGG bg_ranks CSV dump.
         limit:   Maximum number of games to ingest.
     """
     logger.info(f"[info] Seeding game IDs from CSV (limit={limit})")
@@ -93,21 +97,28 @@ def run_stats_pipeline(
     client: BGGClient,
     session: Session,
     limit: int,
+    max_age_days: int,
 ) -> None:
-    """Append a stats snapshot for all (or up to `limit`) games in bgg.games.
+    """Append a stats snapshot for games with missing or stale stats.
+
+    Uses smart refresh: only fetches stats for games where the last snapshot
+    is older than max_age_days, or games that have never had stats fetched.
 
     Args:
         client:  Initialised BGGClient.
         session: Active database session.
         limit:   Cap on the number of games to update (0 = all).
+        max_age_days: Only refresh games where last stats are older than this.
     """
-    game_ids = get_ingested_game_ids(session)
+    # Smart refresh: only fetch stale or missing stats
+    game_ids = get_game_ids_needing_stats_refresh(session, max_age_days)
+
     if limit and limit < len(game_ids):
         game_ids = game_ids[:limit]
-        logger.info(f"[stats] Capped to {limit} games (total available: {len(game_ids)})")
+        logger.info(f"[stats] Capped to {limit} games (total needing refresh: {len(game_ids)})")
 
     if not game_ids:
-        logger.warning("[stats] No games found in bgg.games — run info pipeline first")
+        logger.info("[stats] No games need stats refresh — all stats are up to date")
         return
 
     logger.info(f"[stats] Fetching stats for {len(game_ids)} games")
@@ -161,22 +172,40 @@ def main() -> None:
     database_url = os.environ["DATABASE_URL"]
     base_url = os.environ.get("BGG_BASE_URL", "https://boardgamegeek.com/xmlapi2")
     request_delay = float(os.environ.get("BGG_REQUEST_DELAY_SECONDS", "5"))
-    csv_url = os.environ.get(
-        "BGG_CSV_DUMP_URL", "https://boardgamegeek.com/data_dumps/bg_ranks"
-    )
+    api_token = os.environ.get("BGG_API_TOKEN")
     default_limit = int(os.environ.get("BGG_INGEST_LIMIT", "1000"))
     limit = args.limit or default_limit
+    stats_max_age_days = int(os.environ.get("BGG_STATS_MAX_AGE_DAYS", "7"))
+
+    # CSV source priority: BGG_CSV_LOCAL_PATH > BGG_CSV_DUMP_URL
+    csv_local_path = os.environ.get("BGG_CSV_LOCAL_PATH")
+    csv_dump_url = os.environ.get("BGG_CSV_DUMP_URL")
+
+    if csv_local_path:
+        csv_source = csv_local_path
+        logger.info(f"CSV source: LOCAL (priority) - {csv_source}")
+    elif csv_dump_url:
+        csv_source = csv_dump_url
+        logger.info(f"CSV source: REMOTE - {csv_source}")
+    else:
+        raise ValueError(
+            "Either BGG_CSV_LOCAL_PATH or BGG_CSV_DUMP_URL must be set in environment"
+        )
 
     logger.info(f"Starting boardflow pipeline (mode={args.mode}, limit={limit})")
 
     engine = create_engine(database_url)
 
-    with BGGClient(base_url=base_url, request_delay=request_delay) as client:
+    with BGGClient(
+        base_url=base_url, request_delay=request_delay, api_token=api_token
+    ) as client:
         with Session(engine) as session:
             if args.mode == "info":
-                run_info_pipeline(client, session, csv_url=csv_url, limit=limit)
+                run_info_pipeline(client, session, csv_url=csv_source, limit=limit)
             else:
-                run_stats_pipeline(client, session, limit=limit)
+                run_stats_pipeline(
+                    client, session, limit=limit, max_age_days=stats_max_age_days
+                )
 
     logger.info("Pipeline complete")
 
