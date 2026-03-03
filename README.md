@@ -12,8 +12,12 @@ BGG (BoardGameGeek) data ingestion pipeline for board game metadata, ratings, an
 ## Prerequisites
 
 - **Docker** - [Install Docker](https://docs.docker.com/get-docker/)
-- **Python 3.11+** with [uv](https://github.com/astral-sh/uv)
-- **BGG API Token** - Required for API access
+- **Direnv** - [Install direnv](https://direnv.net/docs/installation.html)
+- **Python 3.12+** with [uv](https://github.com/astral-sh/uv)
+- **CSV Dump** of BGG stored under `/data` - [BGG Data Dump](https://boardgamegeek.com/data_dumps/bg_ranks)
+- **Beekeeper Studio** (Optional) - To view the tables and query around with a nice UI - [Beekeeper Studio
+](https://www.beekeeperstudio.io/)
+- **BGG API Token** - Required for API access 
 
 ## Quick Start
 
