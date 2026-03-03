@@ -14,8 +14,8 @@ help:
 	@echo "  db-create     Create the $(POSTGRES_DB) database if it doesn't exist"
 	@echo "  migrate       Run all pending Alembic migrations"
 	@echo "  migrate-new   Create a new Alembic migration (set MSG= to name it)"
-	@echo "  ingest-info   Run info pipeline (fetch game metadata)"
-	@echo "  ingest-stats  Run stats pipeline (append ratings/ranks snapshot)"
+	@echo "  ingest-info   Run info pipeline (set LIMIT=N to override default)"
+	@echo "  ingest-stats  Run stats pipeline (set LIMIT=N to cap number of games)"
 
 setup: db-start
 	uv sync
@@ -26,7 +26,7 @@ setup: db-start
 
 db-start:
 	docker compose up -d
-	@echo "PostgreSQL started at localhost:5432"
+	@echo "PostgreSQL started at localhost:5440"
 
 db-stop:
 	docker compose down
@@ -37,11 +37,11 @@ db-logs:
 # Creates the application database using the postgres superuser.
 # Safe to run repeatedly — CREATE DATABASE is skipped if it already exists.
 db-create:
-	psql "postgresql://postgres:postgres@localhost:5432/postgres" \
+	@psql "postgresql://postgres:postgres@localhost:5440/postgres" \
 	  -tc "SELECT 1 FROM pg_database WHERE datname = '$(POSTGRES_DB)'" \
-	  | grep -q 1 \
-	  || psql "postgresql://postgres:postgres@localhost:5432/postgres" \
-	       -c "CREATE DATABASE $(POSTGRES_DB);"
+	| grep -q 1 \
+	|| psql "postgresql://postgres:postgres@localhost:5440/postgres" \
+	     -c "CREATE DATABASE \"$(POSTGRES_DB)\";"
 	@echo "Database '$(POSTGRES_DB)' is ready."
 
 migrate:
@@ -51,8 +51,18 @@ migrate:
 migrate-new:
 	uv run alembic -c db/alembic.ini revision --autogenerate -m "$(MSG)"
 
+# Usage: make ingest-info LIMIT=100
 ingest-info:
+ifdef LIMIT
+	uv run python scripts/run_ingestion.py --mode info --limit $(LIMIT)
+else
 	uv run python scripts/run_ingestion.py --mode info
+endif
 
+# Usage: make ingest-stats LIMIT=100
 ingest-stats:
+ifdef LIMIT
+	uv run python scripts/run_ingestion.py --mode stats --limit $(LIMIT)
+else
 	uv run python scripts/run_ingestion.py --mode stats
+endif

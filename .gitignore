@@ -17,3 +17,5 @@ dist/
 docs/
 
 .todo
+
+data/*.csv

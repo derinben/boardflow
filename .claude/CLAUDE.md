@@ -19,7 +19,7 @@
 
 ## BGG API
 - Rate limit: 5 second delay between requests (`BGG_REQUEST_DELAY_SECONDS` env var)
-- No auth required for basic queries
+- Authentication: Requires bearer token via `BGG_API_TOKEN` env var
 - Max 20 game IDs per `/xmlapi2/thing` request
 - Never use `www.boardgamegeek.com` — use `boardgamegeek.com` directly
 - 500/503 responses mean throttling — handled automatically via tenacity in `ingestion/client.py`
@@ -32,7 +32,14 @@
 
 ## Ingestion Pipeline
 - `--mode=info`: Upserts game metadata (idempotent, safe to re-run)
+  - CSV source priority: `BGG_CSV_LOCAL_PATH` (if set) takes precedence over `BGG_CSV_DUMP_URL`
+  - Fails fast if local path is configured but file doesn't exist (no fallback to remote URL)
+  - Local files are validated for freshness (warns if older than `BGG_CSV_MAX_AGE_HOURS`, default: 24 hours)
+  - Logs which source is used (LOCAL vs REMOTE) for audit trail
 - `--mode=stats`: Appends a ratings/ranks snapshot (append-only, preserves history)
+  - Smart refresh: only fetches stats for games where last snapshot is older than `BGG_STATS_MAX_AGE_DAYS` (default: 7 days)
+  - Skips games with recent stats to minimize API calls
+  - Always fetches stats for games that have never had stats before
 - Run info pipeline before stats — stats pipeline reads game IDs from `bgg.games`
 
 ## Alembic Workflow
@@ -52,3 +59,4 @@
 - Keep the code base clean, readable, modular, and well-documented
 - Suggest claude skills to be created if we are repeating the same task over and over again
 - When making code edits, check for what other docs are to be edited in the /docs to reflect the changes instead of creating new ones.
+- At the end of a session, figure out whether an existing doc needs to be updated and if there is too much of divergent changes, create a new file.
