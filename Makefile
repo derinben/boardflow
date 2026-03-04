@@ -1,4 +1,4 @@
-.PHONY: setup db-start db-stop db-logs db-create migrate migrate-new ingest-info ingest-stats help
+.PHONY: setup db-start db-stop db-logs db-create migrate migrate-new ingest-info ingest-stats api-dev api-prod help
 
 # Load .env so DATABASE_URL and POSTGRES_DB are available in this Makefile.
 -include .env
@@ -16,6 +16,8 @@ help:
 	@echo "  migrate-new   Create a new Alembic migration (set MSG= to name it)"
 	@echo "  ingest-info   Run info pipeline (set LIMIT=N to override default)"
 	@echo "  ingest-stats  Run stats pipeline (set LIMIT=N to cap number of games)"
+	@echo "  api-dev       Run FastAPI server in development mode (hot reload)"
+	@echo "  api-prod      Run FastAPI server in production mode"
 
 setup: db-start
 	uv sync
@@ -66,3 +68,11 @@ ifdef LIMIT
 else
 	uv run python scripts/run_ingestion.py --mode stats
 endif
+
+# API development server with hot reload
+api-dev:
+	uv run uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+
+# API production server
+api-prod:
+	uv run uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 4
