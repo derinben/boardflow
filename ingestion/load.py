@@ -10,7 +10,7 @@ Two public functions correspond to the two pipeline modes:
       Append a new stats snapshot into bgg.game_stats and bgg.game_ranks.
       These tables are append-only; no conflict handling is applied.
 
-Both functions accept a SQLAlchemy Session and commit nothing — the caller
+Both functions accept a SQLAlchemy AsyncSession and commit nothing — the caller
 owns the transaction boundary.
 """
 
@@ -19,7 +19,7 @@ from typing import List
 from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ingestion.transform import GameInfo, GameStats, LinkRecord
 
@@ -39,11 +39,11 @@ _LINK_TABLE_MAP: dict = {
 }
 
 
-def load_game_info(session: Session, games: List[GameInfo]) -> None:
+async def load_game_info(session: AsyncSession, games: List[GameInfo]) -> None:
     """Upsert game info records and all associated lookup/junction tables.
 
     Args:
-        session: Active SQLAlchemy session (caller manages commit/rollback).
+        session: Active SQLAlchemy async session (caller manages commit/rollback).
         games:   Validated GameInfo models to persist.
     """
     if not games:
@@ -53,14 +53,14 @@ def load_game_info(session: Session, games: List[GameInfo]) -> None:
     logger.info(f"Loading {len(games)} game info records")
 
     for game in games:
-        _upsert_game(session, game)
-        _upsert_game_names(session, game)
-        _upsert_links(session, game)
+        await _upsert_game(session, game)
+        await _upsert_game_names(session, game)
+        await _upsert_links(session, game)
 
     logger.info(f"Finished loading {len(games)} game info records")
 
 
-def _upsert_game(session: Session, game: GameInfo) -> None:
+async def _upsert_game(session: AsyncSession, game: GameInfo) -> None:
     """Insert or update a single row in bgg.games."""
     stmt = text("""
         INSERT INTO bgg.games (
@@ -90,7 +90,7 @@ def _upsert_game(session: Session, game: GameInfo) -> None:
             min_age        = EXCLUDED.min_age,
             updated_at     = NOW()
     """)
-    session.execute(
+    await session.execute(
         stmt,
         {
             "id": game.id,
@@ -109,14 +109,14 @@ def _upsert_game(session: Session, game: GameInfo) -> None:
     )
 
 
-def _upsert_game_names(session: Session, game: GameInfo) -> None:
+async def _upsert_game_names(session: AsyncSession, game: GameInfo) -> None:
     """Replace all name records for a game (delete + re-insert)."""
-    session.execute(
+    await session.execute(
         text("DELETE FROM bgg.game_names WHERE game_id = :game_id"),
         {"game_id": game.id},
     )
     for name in game.names:
-        session.execute(
+        await session.execute(
             text("""
                 INSERT INTO bgg.game_names (game_id, name, name_type, sort_index)
                 VALUES (:game_id, :name, :name_type, :sort_index)
@@ -130,7 +130,7 @@ def _upsert_game_names(session: Session, game: GameInfo) -> None:
         )
 
 
-def _upsert_links(session: Session, game: GameInfo) -> None:
+async def _upsert_links(session: AsyncSession, game: GameInfo) -> None:
     """Upsert all link records (categories, mechanics, designers, etc.)."""
     # Group links by type for bulk upsert.
     by_type: dict[str, List[LinkRecord]] = {}
@@ -144,7 +144,7 @@ def _upsert_links(session: Session, game: GameInfo) -> None:
 
         for link in links:
             # Upsert into lookup table (id is the BGG entity id).
-            session.execute(
+            await session.execute(
                 text(f"""
                     INSERT INTO {lookup_table} (id, name)
                     VALUES (:id, :name)
@@ -153,7 +153,7 @@ def _upsert_links(session: Session, game: GameInfo) -> None:
                 {"id": link.id, "name": link.name},
             )
             # Upsert into junction table.
-            session.execute(
+            await session.execute(
                 text(f"""
                     INSERT INTO {junction_table} (game_id, {fk_col})
                     VALUES (:game_id, :fk_id)
@@ -168,14 +168,14 @@ def _upsert_links(session: Session, game: GameInfo) -> None:
 # ---------------------------------------------------------------------------
 
 
-def load_game_stats(session: Session, stats_list: List[GameStats]) -> None:
+async def load_game_stats(session: AsyncSession, stats_list: List[GameStats]) -> None:
     """Append stats snapshots to bgg.game_stats and bgg.game_ranks.
 
     These tables are append-only — each call inserts new rows regardless
     of whether a row for the same game_id already exists.
 
     Args:
-        session:    Active SQLAlchemy session.
+        session:    Active SQLAlchemy async session.
         stats_list: Validated GameStats models from the current pipeline run.
     """
     if not stats_list:
@@ -185,40 +185,41 @@ def load_game_stats(session: Session, stats_list: List[GameStats]) -> None:
     logger.info(f"Appending stats snapshots for {len(stats_list)} games")
 
     for stats in stats_list:
-        _insert_game_stat(session, stats)
-        _insert_game_ranks(session, stats)
+        await _insert_game_stat(session, stats)
+        await _insert_game_ranks(session, stats)
 
     logger.info(f"Finished appending stats for {len(stats_list)} games")
 
 
-def get_ingested_game_ids(session: Session) -> List[int]:
+async def get_ingested_game_ids(session: AsyncSession) -> List[int]:
     """Return all game IDs currently stored in bgg.games.
 
     Used by the stats pipeline to determine which games to refresh.
 
     Args:
-        session: Active SQLAlchemy session.
+        session: Active SQLAlchemy async session.
 
     Returns:
         Sorted list of game IDs.
     """
-    rows = session.execute(text("SELECT id FROM bgg.games ORDER BY id")).fetchall()
+    result = await session.execute(text("SELECT id FROM bgg.games ORDER BY id"))
+    rows = result.fetchall()
     ids = [row[0] for row in rows]
     logger.debug(f"Found {len(ids)} existing game IDs in bgg.games")
     return ids
 
 
-def get_game_ids_needing_stats_refresh(session: Session, max_age_days: int) -> List[int]:
+async def get_game_ids_needing_stats_refresh(session: AsyncSession, max_age_days: int) -> List[int]:
     """Return game IDs where stats are missing or older than threshold.
 
     Args:
-        session: Active SQLAlchemy session.
+        session: Active SQLAlchemy async session.
         max_age_days: Only return games where last stats snapshot is older than this.
 
     Returns:
         Sorted list of game IDs needing stats refresh.
     """
-    rows = session.execute(
+    result = await session.execute(
         text("""
             SELECT g.id
             FROM bgg.games g
@@ -230,11 +231,12 @@ def get_game_ids_needing_stats_refresh(session: Session, max_age_days: int) -> L
                 LIMIT 1
             ) latest_stats ON true
             WHERE latest_stats.fetched_at IS NULL
-               OR latest_stats.fetched_at < NOW() - INTERVAL ':days days'
+               OR latest_stats.fetched_at < NOW() - :days * INTERVAL '1 day'
             ORDER BY g.id
         """),
         {"days": max_age_days},
-    ).fetchall()
+    )
+    rows = result.fetchall()
     ids = [row[0] for row in rows]
     logger.info(
         f"Found {len(ids)} games needing stats refresh "
@@ -243,8 +245,8 @@ def get_game_ids_needing_stats_refresh(session: Session, max_age_days: int) -> L
     return ids
 
 
-def _insert_game_stat(session: Session, stats: GameStats) -> None:
-    session.execute(
+async def _insert_game_stat(session: AsyncSession, stats: GameStats) -> None:
+    await session.execute(
         text("""
             INSERT INTO bgg.game_stats (
                 game_id, users_rated, average_rating, bayes_average,
@@ -274,9 +276,9 @@ def _insert_game_stat(session: Session, stats: GameStats) -> None:
     )
 
 
-def _insert_game_ranks(session: Session, stats: GameStats) -> None:
+async def _insert_game_ranks(session: AsyncSession, stats: GameStats) -> None:
     for rank in stats.ranks:
-        session.execute(
+        await session.execute(
             text("""
                 INSERT INTO bgg.game_ranks (
                     game_id, rank_type, rank_name, friendly_name,

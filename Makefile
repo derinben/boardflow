@@ -26,7 +26,7 @@ setup: db-start
 
 db-start:
 	docker compose up -d
-	@echo "PostgreSQL started at localhost:5440"
+	@echo "PostgreSQL started at localhost:5442"
 
 db-stop:
 	docker compose down
@@ -37,10 +37,10 @@ db-logs:
 # Creates the application database using the postgres superuser.
 # Safe to run repeatedly — CREATE DATABASE is skipped if it already exists.
 db-create:
-	@psql "postgresql://postgres:postgres@localhost:5440/postgres" \
+	@psql "postgresql://postgres:postgres@localhost:5442/postgres" \
 	  -tc "SELECT 1 FROM pg_database WHERE datname = '$(POSTGRES_DB)'" \
 	| grep -q 1 \
-	|| psql "postgresql://postgres:postgres@localhost:5440/postgres" \
+	|| psql "postgresql://postgres:postgres@localhost:5442/postgres" \
 	     -c "CREATE DATABASE \"$(POSTGRES_DB)\";"
 	@echo "Database '$(POSTGRES_DB)' is ready."
 
