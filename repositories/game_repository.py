@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.models import (
     Artist,
     Category,
+    CategoryStats,
     Designer,
     Game,
     GameArtist,
@@ -22,6 +23,7 @@ from db.models import (
     GameRank,
     GameStat,
     Mechanic,
+    MechanicStats,
     Publisher,
 )
 from schemas.game_schemas import GameCandidate, GameProfile, GameWithStats
@@ -328,3 +330,29 @@ class GameRepository:
 
         logger.debug(f"Fetched {len(games)} games with full stats")
         return games
+
+    async def get_idf_weights(self) -> tuple[dict[str, float], dict[str, float]]:
+        """Fetch IDF weights for mechanics and categories.
+
+        Returns:
+            (mechanic_weights, category_weights) where keys are names, values are IDF weights.
+            Empty dicts if no weights computed yet.
+        """
+        # Fetch mechanic weights
+        mechanic_query = select(MechanicStats.mechanic_name, MechanicStats.idf_weight)
+        result = await self.session.execute(mechanic_query)
+        mechanic_rows = result.fetchall()
+        mechanic_weights = {row.mechanic_name: row.idf_weight for row in mechanic_rows}
+
+        # Fetch category weights
+        category_query = select(CategoryStats.category_name, CategoryStats.idf_weight)
+        result = await self.session.execute(category_query)
+        category_rows = result.fetchall()
+        category_weights = {row.category_name: row.idf_weight for row in category_rows}
+
+        logger.debug(
+            f"Loaded IDF weights: {len(mechanic_weights)} mechanics, "
+            f"{len(category_weights)} categories"
+        )
+
+        return mechanic_weights, category_weights

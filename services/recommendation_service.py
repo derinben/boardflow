@@ -19,6 +19,7 @@ class RecommendationService:
         session: AsyncSession,
         llm_service: LLMService,
         exploration_weight: float = 0.1,
+        idf_enabled: bool = True,
     ):
         """Initialize recommendation service.
 
@@ -26,10 +27,16 @@ class RecommendationService:
             session: Active database session.
             llm_service: LLM service for intent extraction and explanations.
             exploration_weight: Weight for exploration/diversity (0-1).
+            idf_enabled: Whether to use IDF weighting for mechanics/categories.
         """
         self.repo = GameRepository(session)
         self.llm = llm_service
         self.exploration_weight = exploration_weight
+        self.idf_enabled = idf_enabled
+
+        # IDF weights cache (loaded on first recommendation call)
+        self._mechanic_idf: Optional[Dict[str, float]] = None
+        self._category_idf: Optional[Dict[str, float]] = None
 
     async def get_recommendations(
         self,
@@ -53,11 +60,14 @@ class RecommendationService:
         intent = self.llm.extract_intent(query)
         logger.debug(f"Extracted intent: {intent.model_dump()}")
 
-        # 2. Build user profile from mentioned games
+        # 2. Load IDF weights (once, cached)
+        await self._load_idf_weights()
+
+        # 3. Build user profile from mentioned games
         user_profile = await self._build_user_profile(intent)
         logger.debug(f"User profile: {user_profile}")
 
-        # 3. Fetch candidate games
+        # 4. Fetch candidate games
         exclude_ids = [g["game_id"] for g in user_profile.get("liked_games", [])]
         candidates = await self.repo.get_candidate_games(
             year_min=year_min,
@@ -65,15 +75,15 @@ class RecommendationService:
         )
         logger.info(f"Fetched {len(candidates)} candidate games")
 
-        # 4. Rank candidates
+        # 5. Rank candidates
         ranked = self._rank_candidates(candidates, user_profile, intent)
         logger.info(f"Ranked candidates, top score: {ranked[0]['score']:.3f}")
 
-        # 5. Get full details for top N
+        # 6. Get full details for top N
         top_game_ids = [r["game_id"] for r in ranked[:top_n]]
         games = await self.repo.get_games_with_stats(top_game_ids)
 
-        # 6. Add scores and explanations
+        # 7. Add scores and explanations
         score_map = {r["game_id"]: r for r in ranked[:top_n]}
         for game in games:
             rank_data = score_map[game.id]
@@ -86,6 +96,32 @@ class RecommendationService:
 
         logger.info(f"Returning {len(games)} recommendations")
         return games
+
+    async def _load_idf_weights(self) -> None:
+        """Load IDF weights from database (cached after first call)."""
+        if self._mechanic_idf is not None and self._category_idf is not None:
+            return  # Already loaded
+
+        if not self.idf_enabled:
+            # Use equal weights (1.0) when IDF disabled
+            self._mechanic_idf = {}
+            self._category_idf = {}
+            logger.info("IDF weighting disabled, using equal weights")
+            return
+
+        # Load from database
+        self._mechanic_idf, self._category_idf = await self.repo.get_idf_weights()
+
+        if not self._mechanic_idf and not self._category_idf:
+            logger.warning(
+                "No IDF weights found in database. Run scripts/compute_idf_weights.py to initialize. "
+                "Falling back to equal weights."
+            )
+
+        logger.info(
+            f"Loaded IDF weights: {len(self._mechanic_idf)} mechanics, "
+            f"{len(self._category_idf)} categories"
+        )
 
     async def _build_user_profile(self, intent: ExtractedIntent) -> Dict:
         """Build user profile from games they mentioned liking.
@@ -213,7 +249,9 @@ class RecommendationService:
         }
 
     def _profile_similarity(self, game: GameCandidate, user_profile: Dict) -> float:
-        """Jaccard similarity for mechanics + categories.
+        """Weighted Jaccard similarity for mechanics + categories.
+
+        Uses IDF weights to boost rare mechanics/categories and downweight common ones.
 
         Weight: 0.3 max
         """
@@ -225,19 +263,45 @@ class RecommendationService:
         if not user_mechanics and not user_categories:
             return 0.0
 
-        # Jaccard for mechanics
-        mech_intersection = len(user_mechanics & game_mechanics)
-        mech_union = len(user_mechanics | game_mechanics)
-        mech_sim = mech_intersection / mech_union if mech_union > 0 else 0
+        # Weighted Jaccard for mechanics (70%)
+        mech_sim = self._weighted_jaccard(user_mechanics, game_mechanics, self._mechanic_idf or {})
 
-        # Jaccard for categories
-        cat_intersection = len(user_categories & game_categories)
-        cat_union = len(user_categories | game_categories)
-        cat_sim = cat_intersection / cat_union if cat_union > 0 else 0
+        # Weighted Jaccard for categories (30%)
+        cat_sim = self._weighted_jaccard(user_categories, game_categories, self._category_idf or {})
 
         # Weighted average (mechanics 70%, categories 30%)
         similarity = (mech_sim * 0.7 + cat_sim * 0.3)
         return similarity * 0.3  # Max contribution: 0.3
+
+    def _weighted_jaccard(
+        self,
+        user_items: set[str],
+        game_items: set[str],
+        idf_weights: Dict[str, float],
+    ) -> float:
+        """Compute weighted Jaccard similarity using IDF weights.
+
+        Formula: sum(weights of intersection) / sum(weights of union)
+
+        Args:
+            user_items: User's preferred mechanics/categories.
+            game_items: Game's mechanics/categories.
+            idf_weights: Dict mapping item names to IDF weights.
+
+        Returns:
+            Weighted Jaccard similarity (0-1).
+        """
+        intersection = user_items & game_items
+        union = user_items | game_items
+
+        if not union:
+            return 0.0
+
+        # Sum IDF weights (default 1.0 if item not in weights dict)
+        intersection_weight = sum(idf_weights.get(item, 1.0) for item in intersection)
+        union_weight = sum(idf_weights.get(item, 1.0) for item in union)
+
+        return intersection_weight / union_weight if union_weight > 0 else 0.0
 
     def _preference_alignment(
         self,

@@ -5,6 +5,7 @@ from loguru import logger
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from services import LLMService, RecommendationService
 
 from .dependencies import get_db_session, get_llm_service
@@ -77,6 +78,7 @@ async def get_recommendations(
             session=session,
             llm_service=llm,
             exploration_weight=0.1,
+            idf_enabled=settings.idf_enabled,
         )
 
         # Get recommendations

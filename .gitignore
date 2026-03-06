@@ -14,8 +14,6 @@ dist/
 
 *.excalidraw
 
-docs/
-
 .todo
 
 data/*.csv

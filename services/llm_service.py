@@ -1,12 +1,14 @@
 """LLM service for query extraction and explanation generation using Claude API."""
 
 import json
-import os
 from typing import Dict, List, Optional
 
 import anthropic
+import boto3
 from loguru import logger
 from pydantic import BaseModel, Field
+
+from config import LLMProvider, settings
 
 
 # ---------------------------------------------------------------------------
@@ -71,20 +73,46 @@ class ExtractedIntent(BaseModel):
 class LLMService:
     """Service for Claude API interactions."""
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(
+        self,
+        provider: Optional[LLMProvider] = None,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        aws_region: Optional[str] = None,
+    ):
         """Initialize LLM service.
 
         Args:
-            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var).
-            model: Claude model to use.
+            provider: LLM provider (anthropic or bedrock). Defaults to settings.llm_provider.
+            api_key: Anthropic API key (for native API). Defaults to settings.anthropic_api_key.
+            model: Model name/ID. Defaults to provider-specific setting.
+            aws_region: AWS region for Bedrock. Defaults to settings.aws_region.
         """
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError("ANTHROPIC_API_KEY must be set or passed to LLMService")
+        self.provider = provider or settings.llm_provider
+        self.aws_region = aws_region or settings.aws_region
 
-        self.client = anthropic.Anthropic(api_key=self.api_key)
-        self.model = model
-        logger.debug(f"LLMService initialized with model: {model}")
+        if self.provider == LLMProvider.ANTHROPIC:
+            self.api_key = api_key or settings.anthropic_api_key
+            if not self.api_key:
+                raise ValueError(
+                    "ANTHROPIC_API_KEY must be set in .env or passed to LLMService for Anthropic provider"
+                )
+            self.client = anthropic.Anthropic(api_key=self.api_key)
+            self.model = model or settings.anthropic_model
+            logger.info(f"LLMService initialized with Anthropic native API, model: {self.model}")
+
+        elif self.provider == LLMProvider.BEDROCK:
+            self.bedrock_client = boto3.client(
+                service_name="bedrock-runtime",
+                region_name=self.aws_region,
+            )
+            self.model = model or settings.bedrock_model_id
+            logger.info(
+                f"LLMService initialized with AWS Bedrock, model: {self.model}, region: {self.aws_region}"
+            )
+
+        else:
+            raise ValueError(f"Unsupported LLM provider: {self.provider}")
 
     def extract_intent(self, query: str) -> ExtractedIntent:
         """Extract structured intent from natural language query.
@@ -99,19 +127,12 @@ class LLMService:
 
         logger.info(f"Extracting intent from query: {query[:100]}...")
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=2000,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-        )
+        # Get response based on provider
+        if self.provider == LLMProvider.ANTHROPIC:
+            content = self._call_anthropic(prompt, max_tokens=2000)
+        else:  # BEDROCK
+            content = self._call_bedrock(prompt, max_tokens=2000)
 
-        # Extract JSON from response
-        content = response.content[0].text
         logger.debug(f"LLM response: {content}")
 
         try:
@@ -161,15 +182,103 @@ Score Breakdown:
 Focus on the strongest match factors. Be specific about mechanics/categories that overlap.
 """
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=200,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        # Get response based on provider
+        if self.provider == LLMProvider.ANTHROPIC:
+            explanation = self._call_anthropic(prompt, max_tokens=200)
+        else:  # BEDROCK
+            explanation = self._call_bedrock(prompt, max_tokens=200)
 
-        explanation = response.content[0].text.strip()
+        explanation = explanation.strip()
         logger.debug(f"Generated explanation for {game_name}: {explanation[:100]}...")
         return explanation
+
+    def _call_anthropic(self, prompt: str, max_tokens: int = 2000) -> str:
+        """Call Anthropic native API.
+
+        Args:
+            prompt: User prompt.
+            max_tokens: Maximum tokens to generate.
+
+        Returns:
+            Response text content.
+        """
+        response = self.client.messages.create(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+
+    def _call_bedrock(self, prompt: str, max_tokens: int = 2000) -> str:
+        """Call AWS Bedrock API.
+
+        Args:
+            prompt: User prompt.
+            max_tokens: Maximum tokens to generate.
+
+        Returns:
+            Response text content.
+        """
+        # Bedrock request body for Claude models
+        request_body = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        try:
+            response = self.bedrock_client.invoke_model(
+                modelId=self.model,
+                body=json.dumps(request_body),
+            )
+
+            # Parse response
+            response_body = json.loads(response["body"].read())
+            raw_text = response_body["content"][0]["text"]
+
+            # Extract JSON from markdown code blocks or raw text
+            return self._extract_json_from_text(raw_text)
+
+        except Exception as e:
+            logger.error(f"Bedrock API call failed: {e}")
+            raise
+
+    def _extract_json_from_text(self, text: str) -> str:
+        """Extract JSON from text response, handling markdown code blocks.
+
+        Args:
+            text: Raw text response that may contain JSON in markdown blocks.
+
+        Returns:
+            Extracted JSON string.
+        """
+        # Handle markdown code blocks
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            if end != -1:
+                return text[start:end].strip()
+
+        # Also handle plain ``` blocks
+        if "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end != -1:
+                return text[start:end].strip()
+
+        # Look for JSON object boundaries
+        start_brace = text.find("{")
+        if start_brace != -1:
+            brace_count = 0
+            for i, char in enumerate(text[start_brace:], start_brace):
+                if char == "{":
+                    brace_count += 1
+                elif char == "}":
+                    brace_count -= 1
+                    if brace_count == 0:
+                        return text[start_brace : i + 1]
+
+        return text.strip()
 
     def _build_extraction_prompt(self, query: str) -> str:
         """Build the prompt for intent extraction."""
