@@ -39,6 +39,44 @@ _LINK_TABLE_MAP: dict = {
 }
 
 
+async def get_all_existing_game_ids(session: AsyncSession) -> set[int]:
+    """Load ALL game IDs currently in the database.
+
+    Returns:
+        Set of all game IDs in bgg.games table.
+    """
+    stmt = text("SELECT id FROM bgg.games")
+    result = await session.execute(stmt)
+    existing_ids = {row[0] for row in result.fetchall()}
+
+    logger.info(f"Loaded {len(existing_ids)} existing game IDs from database")
+    return existing_ids
+
+
+async def get_existing_game_ids(session: AsyncSession, game_ids: List[int]) -> set[int]:
+    """Check which game IDs already exist in the database.
+
+    Args:
+        session: Active SQLAlchemy async session.
+        game_ids: List of game IDs to check.
+
+    Returns:
+        Set of game IDs that already exist in bgg.games.
+    """
+    if not game_ids:
+        return set()
+
+    stmt = text("""
+        SELECT id FROM bgg.games
+        WHERE id = ANY(:game_ids)
+    """)
+    result = await session.execute(stmt, {"game_ids": game_ids})
+    existing_ids = {row[0] for row in result.fetchall()}
+
+    logger.debug(f"Found {len(existing_ids)} existing games out of {len(game_ids)} checked")
+    return existing_ids
+
+
 async def load_game_info(session: AsyncSession, games: List[GameInfo]) -> None:
     """Upsert game info records and all associated lookup/junction tables.
 

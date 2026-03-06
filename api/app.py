@@ -42,10 +42,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # CORS middleware (adjust origins for production)
+    # CORS middleware - restrict origins in production
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # TODO: Configure for production
+        allow_origins=[
+            "http://localhost:5173",  # Vite dev server
+            "http://localhost:3000",  # Alternative frontend port
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

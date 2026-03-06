@@ -24,9 +24,10 @@
 cp .env.example .env  # Add ANTHROPIC_API_KEY, BGG_API_TOKEN
 make setup            # Start DB, run migrations
 
-# Ingest data
-make ingest-info LIMIT=1000
-make ingest-stats
+# Ingest data (incremental - skips existing games)
+make ingest-info LIMIT=1000              # Random games (default)
+make ingest-info-ranked LIMIT=1000       # Top-ranked games by BGG rank
+make ingest-stats                        # Stats for all games
 
 # Compute IDF weights (run after ingestion)
 uv run python scripts/compute_idf_weights.py
@@ -163,10 +164,15 @@ IDF_SMOOTHING=1.0
 
 | Script | Purpose | When to Run |
 |--------|---------|-------------|
-| `scripts/run_ingestion.py` | Ingest BGG data | Initial setup + periodic refresh |
+| `scripts/run_ingestion.py` | Ingest BGG data (incremental) | Initial setup + periodic refresh |
 | `scripts/compute_idf_weights.py` | **Compute IDF weights** | **After ingestion, monthly refresh** |
 | `scripts/verify_idf_implementation.py` | Test IDF implementation | After compute_idf_weights.py |
 | `scripts/test_api.py` | Test API recommendations | After starting API server |
+
+**Ingestion Modes:**
+- `--mode info` (default) - Ingest game metadata (random or ranked)
+- `--mode info --ranked` - Ingest top-ranked games by BGG rank
+- `--mode stats` - Fetch stats for existing games
 
 ---
 
@@ -228,6 +234,33 @@ uv run python scripts/verify_idf_implementation.py
 ---
 
 ## Recent Changes
+
+### March 6, 2026: Guaranteed LIMIT via Set-Difference Ingestion
+
+**Ingestion Improvements:**
+- **Guaranteed LIMIT**: Set-difference approach ensures exactly LIMIT new games ingested
+- **Incremental ingestion**: Loads ALL CSV IDs + ALL DB IDs → computes difference
+- **Random sampling (default)**: Better diversity than always top-ranked
+- **Ranked mode (--ranked)**: Top-ranked NEW games (not overall)
+- **Fixed CSV bug**: Filter out 144K unranked games (rank=0)
+
+**Algorithm:**
+1. Load ALL 30K ranked game IDs from CSV
+2. Load ALL existing game IDs from DB
+3. Compute: new_games = CSV - DB
+4. Sample LIMIT from new_games (random or ranked)
+5. Ingest via concurrent workers
+
+**Usage:**
+```bash
+make ingest-info LIMIT=1000              # Random games - guarantees 1000 NEW
+make ingest-info-ranked LIMIT=1000       # Top-ranked NEW games - guarantees 1000 NEW
+# Both modes guarantee LIMIT (or all remaining if fewer available)
+```
+
+**Example:** If DB has 25K games and CSV has 30,210 total:
+- Available NEW: 5,210 games
+- Request LIMIT=10,000 → logs warning, ingests all 5,210 ✓
 
 ### March 6, 2026: TF-IDF Normalization
 

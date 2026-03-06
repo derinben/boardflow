@@ -46,15 +46,114 @@ def _validate_csv_freshness(file_path: Path) -> None:
         )
 
 
-def fetch_ranked_game_ids(csv_source: str, limit: int) -> List[int]:
-    """Load the BGG ranks CSV and return the top `limit` game IDs by rank.
+def fetch_all_ranked_game_ids(csv_source: str) -> List[int]:
+    """Load ALL ranked game IDs from CSV (no limit, no sampling).
+
+    Args:
+        csv_source: URL of the BGG bg_ranks CSV dump, or local file path.
+
+    Returns:
+        List of all game IDs where rank >= 1 (typically ~30k games).
+
+    Raises:
+        httpx.HTTPStatusError: If the CSV download fails (URL source).
+        FileNotFoundError: If the local file doesn't exist (file source).
+    """
+    # Determine if source is a URL or local file path
+    is_url = csv_source.startswith(("http://", "https://"))
+
+    if is_url:
+        logger.info(f"Downloading BGG CSV dump from {csv_source}")
+        response = httpx.get(csv_source, follow_redirects=True, timeout=60.0)
+        response.raise_for_status()
+        logger.debug(f"CSV download complete, {len(response.content):,} bytes")
+        csv_data = io.StringIO(response.text)
+    else:
+        # Treat as local file path
+        file_path = Path(csv_source)
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"BGG_CSV_LOCAL_PATH is set but file does not exist: {csv_source}"
+            )
+
+        logger.info(f"Reading BGG CSV dump from local file: {csv_source}")
+        _validate_csv_freshness(file_path)
+        file_size = file_path.stat().st_size
+        logger.debug(f"File size: {file_size:,} bytes")
+        csv_data = str(file_path)
+
+    df = pd.read_csv(
+        csv_data,
+        usecols=["id", "rank"],
+        dtype={"id": "Int64", "rank": "Int64"},
+    )
+
+    # Drop rows with missing id or rank
+    df = df.dropna(subset=["id", "rank"])
+
+    # Filter out unranked games (rank=0 or rank<1)
+    df = df[df["rank"] >= 1]
+
+    game_ids: List[int] = df["id"].astype(int).tolist()
+    logger.info(f"Loaded {len(game_ids)} ranked game IDs from CSV")
+    return game_ids
+
+
+def load_rank_mapping(csv_source: str) -> dict[int, int]:
+    """Load game_id -> rank mapping from CSV.
+
+    Args:
+        csv_source: URL of the BGG bg_ranks CSV dump, or local file path.
+
+    Returns:
+        Dict mapping game_id to its rank (for sorting in ranked mode).
+
+    Raises:
+        httpx.HTTPStatusError: If the CSV download fails (URL source).
+        FileNotFoundError: If the local file doesn't exist (file source).
+    """
+    # Determine if source is a URL or local file path
+    is_url = csv_source.startswith(("http://", "https://"))
+
+    if is_url:
+        logger.debug(f"Downloading BGG CSV for rank mapping from {csv_source}")
+        response = httpx.get(csv_source, follow_redirects=True, timeout=60.0)
+        response.raise_for_status()
+        csv_data = io.StringIO(response.text)
+    else:
+        file_path = Path(csv_source)
+        if not file_path.exists():
+            raise FileNotFoundError(
+                f"BGG_CSV_LOCAL_PATH is set but file does not exist: {csv_source}"
+            )
+        csv_data = str(file_path)
+
+    df = pd.read_csv(
+        csv_data,
+        usecols=["id", "rank"],
+        dtype={"id": "Int64", "rank": "Int64"},
+    )
+
+    df = df.dropna(subset=["id", "rank"])
+    df = df[df["rank"] >= 1]
+
+    rank_map = dict(zip(df["id"].astype(int), df["rank"].astype(int)))
+    logger.debug(f"Loaded rank mapping for {len(rank_map)} games")
+    return rank_map
+
+
+def fetch_ranked_game_ids(csv_source: str, limit: int, ranked: bool = False) -> List[int]:
+    """Load the BGG ranks CSV and return game IDs.
 
     Args:
         csv_source: URL of the BGG bg_ranks CSV dump, or local file path.
         limit:      Maximum number of game IDs to return.
+        ranked:     If True, return top-ranked games sorted by rank.
+                    If False (default), return random sample of all ranked games.
 
     Returns:
-        List of BGG game IDs ordered by ascending rank (best first).
+        List of BGG game IDs. If ranked=True, ordered by ascending rank (best first).
+        If ranked=False, random sample of games.
 
     Raises:
         httpx.HTTPStatusError: If the CSV download fails (URL source).
@@ -103,12 +202,25 @@ def fetch_ranked_game_ids(csv_source: str, limit: int) -> List[int]:
 
     # Drop rows with missing id or rank (e.g. unranked games in the dump).
     df = df.dropna(subset=["id", "rank"])
-    df = df.sort_values("rank").head(limit)
 
-    game_ids: List[int] = df["id"].astype(int).tolist()
-    logger.info(
-        f"Selected {len(game_ids)} game IDs (rank 1 to {df['rank'].max()})"
-    )
+    # Filter out unranked games (rank=0 or rank<1)
+    df = df[df["rank"] >= 1]
+
+    if ranked:
+        # Top-ranked games sorted by rank
+        df = df.sort_values("rank").head(limit)
+        game_ids: List[int] = df["id"].astype(int).tolist()
+        logger.info(
+            f"Selected {len(game_ids)} top-ranked game IDs (rank {df['rank'].min()} to {df['rank'].max()})"
+        )
+    else:
+        # Random sample of games
+        df = df.sample(n=min(limit, len(df)), random_state=None)  # random_state=None for true randomness
+        game_ids: List[int] = df["id"].astype(int).tolist()
+        logger.info(
+            f"Selected {len(game_ids)} random game IDs from {len(df)} available ranked games"
+        )
+
     return game_ids
 
 

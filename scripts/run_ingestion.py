@@ -26,6 +26,7 @@ Modes
 import argparse
 import asyncio
 import os
+import random
 import sys
 
 from dotenv import load_dotenv
@@ -38,7 +39,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
 
 from ingestion.client import BGGClient
-from ingestion.csv_seed import fetch_ranked_game_ids
+from ingestion.csv_seed import fetch_all_ranked_game_ids, fetch_ranked_game_ids, load_rank_mapping
 from ingestion.load import (
     get_game_ids_needing_stats_refresh,
     load_game_info,
@@ -118,8 +119,16 @@ async def run_info_pipeline(
     csv_url: str,
     limit: int,
     num_workers: int = 5,
+    ranked: bool = False,
 ) -> None:
-    """Fetch and upsert game metadata for the top `limit` ranked BGG games using concurrent workers.
+    """Fetch and upsert game metadata for NEW games from CSV, guaranteeing LIMIT new games.
+
+    Uses set-difference approach:
+    1. Load ALL ranked game IDs from CSV
+    2. Load ALL existing game IDs from DB
+    3. Compute new_games = CSV - DB
+    4. Sample LIMIT from new_games (random or ranked)
+    5. Ingest via concurrent workers
 
     Args:
         base_url:       BGG API base URL.
@@ -127,12 +136,54 @@ async def run_info_pipeline(
         api_token:      BGG API token.
         database_url:   Database connection string.
         csv_url:        URL or local file path of the BGG bg_ranks CSV dump.
-        limit:          Maximum number of games to ingest.
+        limit:          Exact number of NEW games to ingest (guaranteed, unless fewer available).
         num_workers:    Number of concurrent workers (default: 5).
+        ranked:         If True, fetch top-ranked NEW games. If False (default), fetch random NEW games.
     """
-    logger.info(f"[info] Seeding game IDs from CSV (limit={limit})")
-    game_ids = fetch_ranked_game_ids(csv_url, limit)
-    logger.info(f"[info] Retrieved {len(game_ids)} game IDs from CSV")
+    mode_str = "top-ranked NEW" if ranked else "random"
+    logger.info(f"[info] Loading all ranked game IDs from CSV")
+    all_csv_ids = fetch_all_ranked_game_ids(csv_url)
+    logger.info(f"[info] CSV contains {len(all_csv_ids)} ranked games")
+
+    # Check which games already exist in DB
+    async_db_url = database_url.replace('postgresql://', 'postgresql+asyncpg://')
+    engine = create_async_engine(async_db_url, pool_pre_ping=True)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+
+    async with session_factory() as session:
+        from ingestion.load import get_all_existing_game_ids
+        existing_ids = await get_all_existing_game_ids(session)
+
+    logger.info(f"[info] Database contains {len(existing_ids)} games")
+
+    # Compute set difference
+    new_game_ids = list(set(all_csv_ids) - existing_ids)
+    logger.info(f"[info] Found {len(new_game_ids)} NEW games available for ingestion")
+
+    # Handle case: fewer new games than requested
+    if len(new_game_ids) < limit:
+        logger.warning(
+            f"[info] Only {len(new_game_ids)} new games available, "
+            f"less than requested LIMIT={limit}"
+        )
+
+    if not new_game_ids:
+        logger.info("[info] No new games to ingest — all ranked games from CSV already in database")
+        await engine.dispose()
+        return
+
+    # Sample LIMIT games from new_game_ids
+    if ranked:
+        # Ranked mode: sort NEW games by rank, take top LIMIT
+        rank_mapping = load_rank_mapping(csv_url)
+        new_game_ids_with_ranks = [(gid, rank_mapping.get(gid, float('inf'))) for gid in new_game_ids]
+        new_game_ids_with_ranks.sort(key=lambda x: x[1])  # Sort by rank ascending
+        game_ids = [gid for gid, _ in new_game_ids_with_ranks[:limit]]
+        logger.info(f"[info] Selected top {len(game_ids)} ranked NEW games for ingestion")
+    else:
+        # Random mode: random sample from NEW games
+        game_ids = random.sample(new_game_ids, min(limit, len(new_game_ids)))
+        logger.info(f"[info] Selected {len(game_ids)} random NEW games for ingestion")
 
     # Partition work among workers
     chunk_size = len(game_ids) // num_workers
@@ -146,25 +197,20 @@ async def run_info_pipeline(
     progress = {'completed': 0, 'total': len(game_ids)}
     progress_lock = asyncio.Lock()
 
-    # Async DB engine with connection pool
-    async_db_url = database_url.replace('postgresql://', 'postgresql+asyncpg://')
-    engine = create_async_engine(
-        async_db_url,
-        pool_size=10,         # 2 per worker
-        max_overflow=5,       # Burst capacity
-        pool_pre_ping=True,   # Verify connections
-    )
-    session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    # Re-use engine and session_factory from earlier DB check
+    # (engine was already created above for the existing_ids check)
 
     # Launch workers
-    async with BGGClient(base_url, request_delay, api_token, cooldown_event) as client:
-        workers = [
-            worker(i, client, session_factory, chunks[i], False, progress, progress_lock)
-            for i in range(num_workers)
-        ]
-        await asyncio.gather(*workers, return_exceptions=True)
+    try:
+        async with BGGClient(base_url, request_delay, api_token, cooldown_event) as client:
+            workers = [
+                worker(i, client, session_factory, chunks[i], False, progress, progress_lock)
+                for i in range(num_workers)
+            ]
+            await asyncio.gather(*workers, return_exceptions=True)
+    finally:
+        await engine.dispose()
 
-    await engine.dispose()
     logger.info(f"[info] Done. Total games upserted: {progress['completed']}")
 
 
@@ -267,6 +313,15 @@ def _parse_args() -> argparse.Namespace:
             "For --mode=stats, 0 means all games in the DB."
         ),
     )
+    parser.add_argument(
+        "--ranked",
+        action="store_true",
+        help=(
+            "For --mode=info: Fetch top-ranked games by BGG rank. "
+            "By default, fetches random games from CSV. "
+            "Has no effect for --mode=stats."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -297,7 +352,8 @@ async def main_async() -> None:
             "Either BGG_CSV_LOCAL_PATH or BGG_CSV_DUMP_URL must be set in environment"
         )
 
-    logger.info(f"Starting boardflow pipeline (mode={args.mode}, limit={limit}, workers={num_workers})")
+    ranked_str = " (ranked)" if args.mode == "info" and args.ranked else ""
+    logger.info(f"Starting boardflow pipeline (mode={args.mode}{ranked_str}, limit={limit}, workers={num_workers})")
 
     if args.mode == "info":
         await run_info_pipeline(
@@ -308,6 +364,7 @@ async def main_async() -> None:
             csv_url=csv_source,
             limit=limit,
             num_workers=num_workers,
+            ranked=args.ranked,
         )
     else:
         await run_stats_pipeline(

@@ -17,3 +17,8 @@ dist/
 .todo
 
 data/*.csv
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env

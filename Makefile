@@ -1,4 +1,4 @@
-.PHONY: setup db-start db-stop db-logs db-create migrate migrate-new ingest-info ingest-stats api-dev api-prod help
+.PHONY: setup db-start db-stop db-logs db-create migrate migrate-new ingest-info ingest-info-ranked ingest-stats api-dev api-prod help
 
 # Load .env so DATABASE_URL and POSTGRES_DB are available in this Makefile.
 -include .env
@@ -12,10 +12,11 @@ help:
 	@echo "  db-stop       Stop and remove PostgreSQL container"
 	@echo "  db-logs       Tail PostgreSQL container logs"
 	@echo "  db-create     Create the $(POSTGRES_DB) database if it doesn't exist"
-	@echo "  migrate       Run all pending Alembic migrations"
-	@echo "  migrate-new   Create a new Alembic migration (set MSG= to name it)"
-	@echo "  ingest-info   Run info pipeline (set LIMIT=N to override default)"
-	@echo "  ingest-stats  Run stats pipeline (set LIMIT=N to cap number of games)"
+	@echo "  migrate            Run all pending Alembic migrations"
+	@echo "  migrate-new        Create a new Alembic migration (set MSG= to name it)"
+	@echo "  ingest-info        Ingest random games (incremental, set LIMIT=N)"
+	@echo "  ingest-info-ranked Ingest top-ranked games (incremental, set LIMIT=N)"
+	@echo "  ingest-stats       Run stats pipeline (set LIMIT=N to cap number of games)"
 	@echo "  api-dev       Run FastAPI server in development mode (hot reload)"
 	@echo "  api-prod      Run FastAPI server in production mode"
 
@@ -53,12 +54,20 @@ migrate:
 migrate-new:
 	uv run alembic -c db/alembic.ini revision --autogenerate -m "$(MSG)"
 
-# Usage: make ingest-info LIMIT=100
+# Usage: make ingest-info LIMIT=100 (random games, incremental)
 ingest-info:
 ifdef LIMIT
 	uv run python scripts/run_ingestion.py --mode info --limit $(LIMIT)
 else
 	uv run python scripts/run_ingestion.py --mode info
+endif
+
+# Usage: make ingest-info-ranked LIMIT=100 (top-ranked games, incremental)
+ingest-info-ranked:
+ifdef LIMIT
+	uv run python scripts/run_ingestion.py --mode info --limit $(LIMIT) --ranked
+else
+	uv run python scripts/run_ingestion.py --mode info --ranked
 endif
 
 # Usage: make ingest-stats LIMIT=100

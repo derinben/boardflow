@@ -52,12 +52,17 @@ python -m ingestion.client
 
 ### Ingest Game Metadata
 ```bash
-# Start small (recommended for first run)
+# Ingest random games (default, incremental - guarantees LIMIT)
 make ingest-info LIMIT=100
+
+# Ingest top-ranked NEW games (sorted by BGG rank - guarantees LIMIT)
+make ingest-info-ranked LIMIT=100
 
 # Or use default limit from .env (1000 games)
 make ingest-info
 ```
+
+**Note:** Both modes **guarantee** exactly LIMIT new games (or all remaining if fewer available). Uses set-difference to ensure no wasted API calls.
 
 ### Fetch Game Stats
 ```bash
@@ -152,6 +157,64 @@ ingestion/load.py → Postgres (bgg schema)
 - `bgg.game_stats` - Ratings/ownership snapshots (partitioned by month)
 - `bgg.game_ranks` - Ranking snapshots (partitioned by month)
 
+## Frontend - BoardFlow Web App
+
+React + TypeScript web interface for discovering board games through natural language queries.
+
+### Features
+- Natural language search ("I like Catan, want something with trading")
+- Card-based game display with thumbnails, scores, explanations
+- Client-side filtering (complexity, player count, mechanics, categories)
+- Game comparison (side-by-side table)
+- Responsive design (mobile, tablet, desktop)
+
+### Setup
+
+```bash
+cd frontend
+npm install
+```
+
+### Development
+
+**Two terminals required:**
+
+```bash
+# Terminal 1 - Backend API
+cd /path/to/boardflow
+uvicorn api.main:app --reload
+# Runs on http://localhost:8000
+
+# Terminal 2 - Frontend Dev Server
+cd frontend
+npm run dev
+# Runs on http://localhost:5173
+```
+
+Open http://localhost:5173 in your browser.
+
+**How it works:**
+- Vite dev server proxies `/api/*` requests to backend (port 8000)
+- Hot module reload - changes appear instantly
+- Backend must be running for searches to work
+
+### Production Build
+
+```bash
+cd frontend
+npm run build
+```
+
+Creates `frontend/dist/` with static files. Backend serves these in production via FastAPI's `StaticFiles`.
+
+### Learn More
+
+See `frontend/FRONTEND_GUIDE.md` for:
+- Component architecture explanation
+- State flow diagrams
+- How React/Chakra UI work together
+- Debugging tips for beginners
+
 ## Troubleshooting
 
 **Error: BGG_API_TOKEN not set**
@@ -168,3 +231,8 @@ ingestion/load.py → Postgres (bgg schema)
 **No games need stats refresh**
 - All stats are up to date (< 7 days old)
 - Lower `BGG_STATS_MAX_AGE_DAYS` to force refresh
+
+**Frontend: API requests failing**
+- Ensure backend is running on port 8000
+- Check Vite proxy config in `frontend/vite.config.ts`
+- Open browser console for error details
