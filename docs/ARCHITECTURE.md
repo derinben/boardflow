@@ -341,7 +341,5 @@ bgg.game_ranks (game_id, rank_type, rank_name, rank_value, ...)
 
 ## References
 
-- [API Usage Guide](./API_USAGE.md)
-- [Service Layer Guide](./SERVICE_USAGE.md)
-- [Repository Pattern Guide](./REPOSITORY_USAGE.md)
-- [Data Ingestion Guide](./INGESTION.md)
+- [Developer Guide](./DEVELOPER_GUIDE.md) - Complete API, service, and repository usage
+- [Data Ingestion Guide](./INGESTION.md) - BGG pipeline and ETL
