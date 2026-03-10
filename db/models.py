@@ -10,6 +10,7 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     Column,
+    Float,
     ForeignKey,
     Integer,
     MetaData,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     Text,
     TIMESTAMP,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -366,3 +368,54 @@ class GameRank(BggBase):
         nullable=False,
         server_default=text("NOW()"),
     )
+
+
+# ---------------------------------------------------------------------------
+# IDF Statistics Tables — precomputed term weighting for recommendations
+# ---------------------------------------------------------------------------
+
+
+class MechanicStats(BggBase):
+    """IDF (Inverse Document Frequency) weights for mechanics.
+
+    Computed from game_mechanics table. Used to downweight common mechanics
+    (e.g., dice rolling) and boost rare mechanics (e.g., deck building).
+    """
+
+    __tablename__ = "mechanic_stats"
+    __table_args__ = {"schema": "bgg"}
+
+    mechanic_id = Column(
+        Integer,
+        ForeignKey("bgg.mechanics.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    mechanic_name = Column(Text, nullable=False)
+    document_frequency = Column(Integer, nullable=False, comment="Games using this mechanic")
+    idf_weight = Column(Float, nullable=False, comment="log((N + 1) / (df + 1))")
+    computed_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    mechanic = relationship("Mechanic")
+
+
+class CategoryStats(BggBase):
+    """IDF (Inverse Document Frequency) weights for categories.
+
+    Computed from game_categories table. Used to downweight common categories
+    and boost distinctive categories.
+    """
+
+    __tablename__ = "category_stats"
+    __table_args__ = {"schema": "bgg"}
+
+    category_id = Column(
+        Integer,
+        ForeignKey("bgg.categories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    category_name = Column(Text, nullable=False)
+    document_frequency = Column(Integer, nullable=False, comment="Games using this category")
+    idf_weight = Column(Float, nullable=False, comment="log((N + 1) / (df + 1))")
+    computed_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now())
+
+    category = relationship("Category")

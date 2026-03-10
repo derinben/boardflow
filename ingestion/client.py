@@ -6,10 +6,12 @@ for the BGG XMLAPI2.
 BGG throttles requests that arrive too quickly. The recommended delay
 between requests is at least 5 seconds. Servers return 429, 500, or 503
 when throttled — all are retried with exponential back-off via tenacity.
+
+Supports concurrent requests with global cooldown coordination via asyncio.Event.
 """
 
-import time
-from typing import Generator, List
+import asyncio
+from typing import AsyncGenerator, List
 
 import httpx
 from loguru import logger
@@ -35,9 +37,10 @@ class BGGClient:
     """Thin wrapper around the BGG XMLAPI2 /thing endpoint.
 
     Args:
-        base_url:      API base URL (read from BGG_BASE_URL env var via caller).
-        request_delay: Seconds to sleep between consecutive batches.
-        api_token:     Optional bearer token for authentication (read from BGG_API_TOKEN).
+        base_url:       API base URL (read from BGG_BASE_URL env var via caller).
+        request_delay:  Seconds to sleep between consecutive batches.
+        api_token:      Optional bearer token for authentication (read from BGG_API_TOKEN).
+        cooldown_event: Shared event for coordinating global rate limit cooldowns.
     """
 
     def __init__(
@@ -45,10 +48,12 @@ class BGGClient:
         base_url: str,
         request_delay: float = 5.0,
         api_token: str | None = None,
+        cooldown_event: asyncio.Event | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._request_delay = request_delay
         self._api_token = api_token
+        self._cooldown_event = cooldown_event or asyncio.Event()
 
         # Set up HTTP client with optional authorization header
         headers = {}
@@ -56,31 +61,31 @@ class BGGClient:
             headers["Authorization"] = f"Bearer {self._api_token}"
             logger.debug("BGGClient using bearer token authentication")
 
-        self._http = httpx.Client(timeout=30.0, headers=headers)
+        self._http = httpx.AsyncClient(timeout=30.0, headers=headers)
         logger.debug(
             f"BGGClient initialised (base_url={self._base_url}, delay={self._request_delay}s)"
         )
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Release the underlying HTTP connection pool."""
-        self._http.close()
+        await self._http.aclose()
 
-    def __enter__(self) -> "BGGClient":
+    async def __aenter__(self) -> "BGGClient":
         return self
 
-    def __exit__(self, *args) -> None:
-        self.close()
+    async def __aexit__(self, *args) -> None:
+        await self.close()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def fetch_things_raw(
+    async def fetch_things_raw(
         self,
         game_ids: List[int],
         *,
         include_stats: bool = False,
-    ) -> Generator[bytes, None, None]:
+    ) -> AsyncGenerator[bytes, None]:
         """Yield raw XML bytes for each batch of up to 20 game IDs.
 
         Args:
@@ -101,9 +106,15 @@ class BGGClient:
                 logger.debug(
                     f"Rate-limit sleep {self._request_delay}s before batch {i + 1}"
                 )
-                time.sleep(self._request_delay)
+                await asyncio.sleep(self._request_delay)
 
-            xml_bytes = self._fetch_batch(batch, include_stats=include_stats)
+            # Check global cooldown before fetching
+            if self._cooldown_event.is_set():
+                logger.info("Waiting for global cooldown to clear...")
+                while self._cooldown_event.is_set():
+                    await asyncio.sleep(0.5)
+
+            xml_bytes = await self._fetch_batch(batch, include_stats=include_stats)
             logger.debug(
                 f"Batch {i + 1}/{len(batches)} returned {len(xml_bytes):,} bytes"
             )
@@ -119,7 +130,7 @@ class BGGClient:
         stop=stop_after_attempt(5),
         reraise=True,
     )
-    def _fetch_batch(self, ids: List[int], *, include_stats: bool) -> bytes:
+    async def _fetch_batch(self, ids: List[int], *, include_stats: bool) -> bytes:
         """Fetch a single batch with automatic retry on retriable errors."""
         id_str = ",".join(str(i) for i in ids)
         params: dict = {"id": id_str, "type": "boardgame"}
@@ -131,9 +142,22 @@ class BGGClient:
             f"GET {url} ids={id_str[:60]}{'...' if len(id_str) > 60 else ''}"
         )
 
-        response = self._http.get(url, params=params)
-        response.raise_for_status()
-        return response.content
+        try:
+            response = await self._http.get(url, params=params)
+            response.raise_for_status()
+            return response.content
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in {429, 503}:
+                logger.warning(f"Rate limit hit (HTTP {e.response.status_code}), triggering 5s global cooldown")
+                self._cooldown_event.set()
+                asyncio.create_task(self._reset_cooldown())
+            raise
+
+    async def _reset_cooldown(self) -> None:
+        """Reset the global cooldown event after 5 seconds."""
+        await asyncio.sleep(5)
+        self._cooldown_event.clear()
+        logger.info("Global cooldown cleared, resuming requests")
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +165,7 @@ class BGGClient:
 # ---------------------------------------------------------------------------
 
 
-def _chunks(lst: List, size: int) -> Generator[List, None, None]:
+def _chunks(lst: List, size: int):
     """Split list into successive chunks of at most `size` items."""
     for i in range(0, len(lst), size):
         yield lst[i : i + size]
@@ -152,7 +176,7 @@ def _chunks(lst: List, size: int) -> Generator[List, None, None]:
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+async def main() -> None:
     """Test the BGG API client with a few popular game IDs.
 
     Usage:
@@ -187,14 +211,13 @@ def main() -> None:
     logger.info("")
 
     try:
-        with BGGClient(
+        async with BGGClient(
             base_url=base_url, request_delay=request_delay, api_token=api_token
         ) as client:
             # Test 1: Fetch without stats
             logger.info("Test 1: Fetching game metadata (no stats)")
-            for i, xml_bytes in enumerate(
-                client.fetch_things_raw(test_game_ids, include_stats=False)
-            ):
+            i = 0
+            async for xml_bytes in client.fetch_things_raw(test_game_ids, include_stats=False):
                 logger.info(
                     f"  Batch {i + 1}: Received {len(xml_bytes):,} bytes"
                 )
@@ -206,14 +229,14 @@ def main() -> None:
                     )
                 else:
                     logger.warning(f"  ⚠️  Unexpected XML format")
+                i += 1
 
             logger.info("")
 
             # Test 2: Fetch with stats
             logger.info("Test 2: Fetching game metadata + stats")
-            for i, xml_bytes in enumerate(
-                client.fetch_things_raw(test_game_ids, include_stats=True)
-            ):
+            i = 0
+            async for xml_bytes in client.fetch_things_raw(test_game_ids, include_stats=True):
                 logger.info(
                     f"  Batch {i + 1}: Received {len(xml_bytes):,} bytes"
                 )
@@ -224,6 +247,7 @@ def main() -> None:
                     )
                 else:
                     logger.warning(f"  ⚠️  Stats not found in response")
+                i += 1
 
         logger.info("")
         logger.info("=" * 70)
@@ -238,4 +262,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
