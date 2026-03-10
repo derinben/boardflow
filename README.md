@@ -34,8 +34,9 @@ git clone <repo-url>
 cd boardflow
 cp .env.example .env
 
-# 2. Edit .env - Add your BGG_API_TOKEN and set BGG_CSV_LOCAL_PATH
-# BGG_API_TOKEN=your-token-here
+# 2. Edit .env - Configure required variables (see Configuration section below)
+# ANTHROPIC_API_KEY=sk-ant-...          # For Claude API
+# BGG_API_TOKEN=your-token-here         # For BGG API
 # BGG_CSV_LOCAL_PATH=./data/boardgames_ranks.csv
 
 # 3. Download BGG CSV rankings (manual step - see below)
@@ -70,6 +71,13 @@ make ingest-info
 
 **Note:** Both modes **guarantee** exactly LIMIT new games (or all remaining if fewer available). Uses set-difference to ensure no wasted API calls.
 
+**Alternative:** Run ingestion script directly:
+```bash
+uv run python scripts/run_ingestion.py --mode info --limit 1000
+uv run python scripts/run_ingestion.py --mode info --limit 1000 --ranked
+uv run python scripts/run_ingestion.py --mode stats
+```
+
 ### Fetch Game Stats
 ```bash
 # Fetches stats for games missing stats or older than 7 days
@@ -79,12 +87,42 @@ make ingest-stats
 make ingest-stats LIMIT=100
 ```
 
+### Compute IDF Weights
+```bash
+# Run after ingestion to enable weighted recommendations
+uv run python scripts/compute_idf_weights.py
+
+# Verify implementation
+uv run python scripts/verify_idf_implementation.py
+```
+
 ### Database Management
 ```bash
 make db-start       # Start Postgres
 make db-stop        # Stop Postgres
 make db-logs        # View logs
 make migrate        # Run migrations
+```
+
+**Manual migrations:**
+```bash
+# Run pending migrations
+uv run alembic -c db/alembic.ini upgrade head
+
+# Create new migration
+uv run alembic -c db/alembic.ini revision -m "description"
+```
+
+### Testing
+```bash
+# Start API server
+uv run fastapi dev api/app.py
+
+# Test recommendations
+uv run python scripts/test_api.py
+
+# Verify IDF implementation
+uv run python scripts/verify_idf_implementation.py
 ```
 
 ## Usage Scenarios
@@ -120,16 +158,22 @@ All settings in `.env`:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
+| `DATABASE_URL` | No | `postgresql://postgres:postgres@localhost:5432/boardflow` | PostgreSQL connection string |
+| `LLM_PROVIDER` | No | anthropic | LLM provider: `anthropic` or `bedrock` |
+| `ANTHROPIC_API_KEY` | Yes* | - | Claude API key (native API) |
+| `BEDROCK_MODEL_ID` | Yes* | - | AWS Bedrock model ID (e.g., `anthropic.claude-sonnet-4-5-...`) |
 | `BGG_API_TOKEN` | Yes | - | Bearer token for BGG API |
-| `BGG_CSV_LOCAL_PATH` | Yes* | - | Path to local CSV file |
-| `BGG_CSV_DUMP_URL` | Yes* | - | URL to download CSV (fallback) |
+| `BGG_CSV_LOCAL_PATH` | Yes** | - | Path to local CSV file |
+| `BGG_CSV_DUMP_URL` | Yes** | - | URL to download CSV (fallback) |
 | `BGG_REQUEST_DELAY_SECONDS` | No | 2 | Delay between requests per worker |
 | `BGG_NUM_WORKERS` | No | 5 | Number of concurrent workers |
 | `BGG_STATS_MAX_AGE_DAYS` | No | 7 | Only refresh stats older than this |
 | `BGG_INGEST_LIMIT` | No | 1000 | Default number of games to ingest |
-| `DATABASE_URL` | No | (auto) | PostgreSQL connection string |
+| `IDF_ENABLED` | No | true | Enable IDF weighting for recommendations |
+| `IDF_SMOOTHING` | No | 1.0 | Smoothing factor for IDF calculation |
 
-\* At least one CSV source required
+\* Required based on `LLM_PROVIDER` choice
+\** At least one CSV source required
 
 ### Concurrency & Performance
 
