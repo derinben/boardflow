@@ -240,14 +240,14 @@ make ingest-stats LIMIT=100   # Refresh top 100 daily
 
 **Choose one:**
 
-**Option 1: Anthropic Claude API (Recommended for simplicity)**
+**Option 1: Anthropic Claude API**
 ```bash
 LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 Get your API key at: https://console.anthropic.com/
 
-**Option 2: AWS Bedrock (Recommended for production)**
+**Option 2: AWS Bedrock**
 ```bash
 LLM_PROVIDER=bedrock
 BEDROCK_MODEL_ID=anthropic.claude-sonnet-4-5-20241022-v2:0
