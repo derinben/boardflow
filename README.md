@@ -54,7 +54,7 @@ That's it! Database is running, migrations applied, ready to ingest.
 
 ### Test API Connection
 ```bash
-python -m ingestion.client
+uv run python -m ingestion.client
 ```
 
 ### Ingest Game Metadata
@@ -115,8 +115,9 @@ uv run alembic -c db/alembic.ini revision -m "description"
 
 ### Testing
 ```bash
-# Start API server
-uv run fastapi dev api/app.py
+# Start API server (development mode with hot reload)
+make api-dev
+# Or manually: uv run uvicorn api.main:app --reload
 
 # Test recommendations
 uv run python scripts/test_api.py
@@ -176,6 +177,7 @@ All settings in `.env`:
 \** At least one CSV source required
 
 ### Concurrency & Performance
+We need this detailed because the BGG XML api has rate limits. 
 
 The pipeline uses **async/await with 5 concurrent workers** by default:
 - **Request delay**: 2 seconds per worker (configurable via `BGG_REQUEST_DELAY_SECONDS`)
@@ -186,18 +188,6 @@ The pipeline uses **async/await with 5 concurrent workers** by default:
 Adjust `BGG_NUM_WORKERS` and `BGG_REQUEST_DELAY_SECONDS` based on your needs:
 - More aggressive: `BGG_NUM_WORKERS=5 BGG_REQUEST_DELAY_SECONDS=2`
 - Conservative: `BGG_NUM_WORKERS=3 BGG_REQUEST_DELAY_SECONDS=3`
-
-## Architecture
-
-```
-BGG CSV → ingestion/csv_seed.py → Game IDs
-    ↓
-BGG API → ingestion/client.py → XML
-    ↓
-ingestion/transform.py → Validated Models
-    ↓
-ingestion/load.py → Postgres (bgg schema)
-```
 
 ## Frontend - BoardFlow Web App
 
@@ -224,7 +214,7 @@ npm install
 ```bash
 # Terminal 1 - Backend API
 cd /path/to/boardflow
-uvicorn api.main:app --reload
+make api-dev
 # Runs on http://localhost:8000
 
 # Terminal 2 - Frontend Dev Server
