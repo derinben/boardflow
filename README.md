@@ -14,6 +14,9 @@ This project currently employs a barebones version of a recommendation model tha
 ## What can you do with this repo?
 If you are a fellow geek, feel free to run through the steps below to run this application, do some analytics on the boardgame data to see if we can get any funny insights and/or let me know how we can improve the recommendations logic. 
 
+For more project related changes and details, refer to - [PROJECT.md](PROJECT.md)
+
+#### Roll up your sleeves if you wish you proceed further.
 
 ## Prerequisites
 
