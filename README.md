@@ -1,7 +1,5 @@
 # BoardFlow
 
-BGG (BoardGameGeek) data ingestion pipeline for board game metadata, ratings, and rankings.
-
 ## Why Am I Doing This?
 Just for fun. I am a board game enthusiast and wanted to see if I can create a personalized experience while selecting my next boardgame.
 
