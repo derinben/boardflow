@@ -1,6 +1,12 @@
 # BoardFlow
 
-## Why Am I Doing This?
+**LLM-powered board game recommendation engine** using content-based filtering with IDF weighting, and BoardGameGeek data. Natural language queries → personalized game suggestions with explanations.
+
+**Tech Stack:** Python, FastAPI, PostgreSQL, React/TypeScript, Anthropic Claude API (or AWS Bedrock), async ingestion pipeline.
+
+---
+
+## Why did I build this?
 Just for fun. I am a board game enthusiast and wanted to see if I can create a personalized experience while selecting my next boardgame.
 
 ## What It Does
@@ -9,22 +15,80 @@ Just for fun. I am a board game enthusiast and wanted to see if I can create a p
 - A lil bit of AI Engineering - Understand user's query and fetches a suitable list of boardgames with an explanation as to why you may like it. <br>
 This project currently employs a barebones version of a recommendation model that I can consider to be the baseline. 
 
-## What can you do with this repo?
-If you are a fellow geek, feel free to run through the steps below to run this application, do some analytics on the boardgame data to see if we can get any funny insights and/or let me know how we can improve the recommendations logic. 
 
-For more project related changes and details, refer to - [PROJECT.md](PROJECT.md)
+### Core Stuff
 
-#### Roll up your sleeves if you wish you proceed further.
+**Data Ingestion Pipeline:**
+- Fetches board game metadata from BoardGameGeek XML API
+- Two modes: **Random sampling** (diversity) or **Ranked mode** (top-rated games first)
+- Async/concurrent workers with rate limiting (10× faster than sequential)
+- Incremental ingestion (skips existing games, guarantees exact LIMIT)
+- Stores in PostgreSQL with partitioned time-series tables
+
+**AI-Powered Recommendations:**
+- **LLM Providers**: Anthropic Claude API (native) or AWS Bedrock
+- Natural language query parsing via Claude (extracts preferences, liked games)
+- Content-based filtering with **IDF weighting** (rare mechanics score higher)
+- 4-component scoring: Profile similarity (30%), Preferences (35%), Quality (25%), Exploration (10%)
+- Claude generates human-readable explanations for each recommendation
+
+**Web Interface:**
+- React + TypeScript frontend with natural language search
+- Client-side filtering (complexity, player count, mechanics, categories)
+- Game comparison and side-by-side views
+- Responsive design (mobile/tablet/desktop) 
+
+## How It Works
+
+**Data Pipeline:**
+```
+BGG CSV Rankings (30K games) → Filter by rank → PostgreSQL (game IDs)
+    ↓
+BGG XML API → Batch fetch (20 games/request) → Parse & validate
+    ↓
+PostgreSQL (bgg schema) → Game metadata, mechanics, categories, stats
+    ↓
+IDF Computation → Mechanic/category importance weights
+```
+
+**Recommendation Flow:**
+```
+User Query ("I like Catan, want trading mechanics")
+    ↓
+Claude API → Extract: liked games, preferred mechanics, player count, complexity
+    ↓
+Build Profile → Aggregate mechanics/categories from liked games (weighted by IDF)
+    ↓
+Candidate Retrieval → Fetch all games from PostgreSQL
+    ↓
+Scoring Algorithm → Profile similarity + Preferences + Quality + Exploration
+    ↓
+Top 10 Games → Claude API generates explanations for each
+    ↓
+JSON Response → Frontend displays cards with scores and reasoning
+```
+
+## What Can You Do?
+
+- **Run the app**: Follow setup below to get personalized game recommendations
+- **Analyze data**: Explore multitude of board games, mechanics, categories
+- **Improve recommendations**: Experiment with scoring weights, new features etc
+- **Contribute**: See [PROJECT.md](PROJECT.md) for technical details and recent changes
+
+#### Roll up your sleeves if you wish to proceed further.
 
 ## Prerequisites
 
-- **Docker** - [Install Docker](https://docs.docker.com/get-docker/)
-- **Direnv** - [Install direnv](https://direnv.net/docs/installation.html)
-- **Python 3.12+** with [uv](https://github.com/astral-sh/uv)
-- **CSV Dump** of BGG stored under `/data` - [BGG Data Dump](https://boardgamegeek.com/data_dumps/bg_ranks)
-- **Beekeeper Studio** (Optional) - To view the tables and query around with a nice UI - [Beekeeper Studio
-](https://www.beekeeperstudio.io/)
-- **BGG API Token** - Required for API access 
+**Required:**
+- **Docker** - For PostgreSQL database - [Install Docker](https://docs.docker.com/get-docker/)
+- **Python 3.12+** with [uv](https://github.com/astral-sh/uv) - Python package manager
+- **BGG CSV Dump** - Game rankings from BoardGameGeek - [Download CSV](https://boardgamegeek.com/data_dumps/bg_ranks)
+- **BGG API Token** - For fetching game metadata - Contact BGG or check their API docs
+- **Anthropic API Key** - For Claude AI recommendations - [Get key](https://console.anthropic.com/) (or use AWS Bedrock)
+
+**Optional:**
+- **Direnv** - Auto-load environment variables - [Install direnv](https://direnv.net/docs/installation.html)
+- **Beekeeper Studio** - Visual DB client for exploring data - [Download](https://www.beekeeperstudio.io/) 
 
 ## Quick Start
 
@@ -58,18 +122,30 @@ uv run python -m ingestion.client
 ```
 
 ### Ingest Game Metadata
+
+**Two Ingestion Modes:**
+
+**1. Random Mode (Default)** - Better for catalog diversity
 ```bash
-# Ingest random games (default, incremental - guarantees LIMIT)
 make ingest-info LIMIT=100
+```
+Samples randomly from 30K ranked games. Best for exploring the full catalog, not just top-rated games.
 
-# Ingest top-ranked NEW games (sorted by BGG rank - guarantees LIMIT)
+**2. Ranked Mode** - Best for quality-first approach
+```bash
 make ingest-info-ranked LIMIT=100
+```
+Ingests top-ranked NEW games first (sorted by BGG rank). Best for starting with highest-rated games.
 
-# Or use default limit from .env (1000 games)
+**Or use default limit from .env (1000 games):**
+```bash
 make ingest-info
 ```
 
-**Note:** Both modes **guarantee** exactly LIMIT new games (or all remaining if fewer available). Uses set-difference to ensure no wasted API calls.
+**How it works:**
+- Set-difference algorithm: Loads ALL CSV game IDs and ALL DB game IDs → computes difference → samples exactly LIMIT new games
+- **Guarantees** exactly LIMIT new games (or all remaining if fewer available)
+- No wasted API calls on duplicate games
 
 **Alternative:** Run ingestion script directly:
 ```bash
@@ -88,13 +164,18 @@ make ingest-stats LIMIT=100
 ```
 
 ### Compute IDF Weights
+
+**What it does:** Calculates importance weights for mechanics and categories. Rare mechanics (e.g., "Worker Placement") get higher weights than common ones (e.g., "Dice Rolling"), leading to more distinctive recommendations.
+
 ```bash
 # Run after ingestion to enable weighted recommendations
 uv run python scripts/compute_idf_weights.py
 
-# Verify implementation
+# Verify implementation (checks that rare mechanics score higher)
 uv run python scripts/verify_idf_implementation.py
 ```
+
+**When to run:** After initial ingestion, then monthly when you add significant numbers of new games.
 
 ### Database Management
 ```bash
@@ -154,6 +235,28 @@ make ingest-stats LIMIT=100   # Refresh top 100 daily
 ```
 
 ## Configuration
+
+### LLM Provider Setup
+
+**Choose one:**
+
+**Option 1: Anthropic Claude API (Recommended for simplicity)**
+```bash
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+Get your API key at: https://console.anthropic.com/
+
+**Option 2: AWS Bedrock (Recommended for production)**
+```bash
+LLM_PROVIDER=bedrock
+BEDROCK_MODEL_ID=anthropic.claude-sonnet-4-5-20241022-v2:0
+AWS_REGION=us-east-1
+AWS_PROFILE=your-profile  # Or use IAM role
+```
+Requires AWS credentials configured (via `aws configure` or IAM role).
+
+### All Environment Variables
 
 All settings in `.env`:
 
