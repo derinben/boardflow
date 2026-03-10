@@ -138,25 +138,6 @@ Commands in [README.md](README.md).
 
 ---
 
-## Performance
-
-**Typical Request:** 3-8 seconds total
-- Intent extraction via Claude API: 1-2s
-- Database retrieval + ranking: 0.5-1.5s
-- Explanation generation via Claude API: 1-4s
-
-**Dataset:** 5,893 games with 173 unique mechanics and 84 categories (as of March 6, 2026)
-
-**Bottlenecks:**
-- Two LLM API calls per request (extraction + explanation)
-- Candidate retrieval SQL query
-
-**Optimizations:**
-- IDF weights cached in memory (one-time load)
-- Partitioned time-series tables for game_stats and game_ranks
-
----
-
 ## Recent Changes
 
 ### March 6, 2026: Guaranteed LIMIT via Set-Difference Ingestion
