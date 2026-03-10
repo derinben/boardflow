@@ -4,16 +4,12 @@
 
 ---
 
-## Status: ✅ MVP Complete
-
 **Core Features:**
-- ✅ BGG data ingestion (metadata, stats, rankings)
+- ✅ Boardgamegeek application data ingestion (metadata, stats, rankings)
 - ✅ Natural language query parsing (Claude API)
 - ✅ Content-based recommendation algorithm with IDF weighting
 - ✅ FastAPI REST API
 - ✅ Async PostgreSQL with partitioned time-series tables
-
-**Recent:** TF-IDF normalization (March 6, 2026) - rare mechanics now weighted 3.6× higher than common ones
 
 ---
 
@@ -272,89 +268,13 @@ make ingest-info-ranked LIMIT=1000       # Top-ranked NEW games - guarantees 100
 - Replaced binary Jaccard with weighted Jaccard
 
 **Impact:**
-- Rare mechanic matches score **3.6× higher**
+- Rare mechanic matches score
 - More distinctive recommendations
 - Backward compatible (falls back to equal weights if disabled)
-
-**Files Changed:**
-- `db/versions/20260306_add_idf_stats.py` - New migration
-- `db/models.py` - MechanicStats, CategoryStats models
-- `services/idf_service.py` - NEW: Compute & store IDF weights
-- `services/recommendation_service.py` - Weighted Jaccard implementation
-- `repositories/game_repository.py` - get_idf_weights() method
-- `config.py` - IDF_ENABLED, IDF_SMOOTHING settings
-
----
-
-## Documentation
-
-- [README.md](./README.md) - Quick start & ingestion
-- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) - System design & algorithms
-- [docs/API_USAGE.md](./docs/API_USAGE.md) - FastAPI endpoints
-- [docs/SERVICE_USAGE.md](./docs/SERVICE_USAGE.md) - Recommendation & LLM services
-- [docs/REPOSITORY_USAGE.md](./docs/REPOSITORY_USAGE.md) - Database access patterns
-- [docs/INGESTION.md](./docs/INGESTION.md) - BGG data pipeline
-- [docs/LLM_CONFIGURATION.md](./docs/LLM_CONFIGURATION.md) - Anthropic/Bedrock setup
-
----
-
-## Stack
-
-- **Language:** Python 3.12+
-- **Framework:** FastAPI (async)
-- **Database:** PostgreSQL 16 + asyncpg
-- **ORM:** SQLAlchemy 2.0 (async)
-- **Migrations:** Alembic
-- **LLM:** Claude (Anthropic API or AWS Bedrock)
-- **Package Manager:** uv
-- **Testing:** pytest + httpx (async)
-
----
-
-## Project Structure
-
-```
-boardflow/
-├── api/                        # FastAPI application
-│   ├── app.py                  # App factory
-│   ├── routes.py               # Endpoints
-│   ├── schemas.py              # Pydantic request/response models
-│   └── dependencies.py         # DI (DB session, services)
-├── db/                         # Database layer
-│   ├── models.py               # SQLAlchemy ORM models
-│   ├── versions/               # Alembic migrations
-│   ├── env.py                  # Alembic environment
-│   └── alembic.ini             # Alembic config
-├── ingestion/                  # BGG data pipeline
-│   ├── client.py               # BGG XML API client
-│   ├── csv_seed.py             # CSV game ID loader
-│   ├── transform.py            # XML → Pydantic models
-│   └── load.py                 # Pydantic → Database
-├── repositories/               # Data access layer
-│   └── game_repository.py      # Game queries
-├── schemas/                    # Domain models
-│   └── game_schemas.py         # GameProfile, GameCandidate, GameWithStats
-├── services/                   # Business logic
-│   ├── llm_service.py          # Claude API wrapper
-│   ├── recommendation_service.py  # Ranking orchestration
-│   └── idf_service.py          # IDF weight computation (NEW)
-├── scripts/                    # Utilities
-│   ├── run_ingestion.py        # Ingest BGG data
-│   ├── compute_idf_weights.py  # Compute IDF weights (NEW)
-│   ├── verify_idf_implementation.py  # Test IDF (NEW)
-│   └── test_api.py             # API integration test
-├── docs/                       # Documentation
-├── .env.example                # Environment template
-├── pyproject.toml              # Project metadata (uv)
-├── Makefile                    # Common tasks
-├── README.md                   # Quick start
-└── PROJECT.md                  # This file
-```
-
 ---
 
 ## Contact
 
 **Project:** BoardFlow - Board Game Recommendation Engine
 **Developer:** Derin Ben Roberts
-**Last Updated:** March 6, 2026
+**Last Updated:** March 10, 2026

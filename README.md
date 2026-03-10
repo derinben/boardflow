@@ -2,13 +2,18 @@
 
 BGG (BoardGameGeek) data ingestion pipeline for board game metadata, ratings, and rankings.
 
+## Why Am I Doing This?
+Just for fun. I am a board game enthusiast and wanted to see if I can create a personalized experience while selecting my next boardgame.
+
 ## What It Does
 
-- Fetches board game data from BoardGameGeek XML API with concurrent workers
-- Stores game metadata (names, categories, mechanics, designers, publishers)
-- Tracks ratings and rankings over time (append-only history)
-- Smart refresh: only updates stale stats
-- Automatic rate limit handling with global cooldown coordination
+- A lil bit of Data Engineering - Fetches board game data from BoardGameGeek XML API -> ingests into a local pgdb
+- A lil bit of AI Engineering - Understand user's query and fetches a suitable list of boardgames with an explanation as to why you may like it. <br>
+This project currently employs a barebones version of a recommendation model that I can consider to be the baseline. 
+
+## What can you do with this repo?
+If you are a fellow geek, feel free to run through the steps below to run this application, do some analytics on the boardgame data to see if we can get any funny insights and/or let me know how we can improve the recommendations logic. 
+
 
 ## Prerequisites
 
@@ -149,14 +154,6 @@ ingestion/transform.py → Validated Models
 ingestion/load.py → Postgres (bgg schema)
 ```
 
-### Database Schema
-
-- `bgg.games` - Core game records
-- `bgg.game_names` - All name variants
-- `bgg.categories`, `bgg.mechanics`, `bgg.designers`, etc. - Lookup tables
-- `bgg.game_stats` - Ratings/ownership snapshots (partitioned by month)
-- `bgg.game_ranks` - Ranking snapshots (partitioned by month)
-
 ## Frontend - BoardFlow Web App
 
 React + TypeScript web interface for discovering board games through natural language queries.
@@ -198,7 +195,7 @@ Open http://localhost:5173 in your browser.
 - Hot module reload - changes appear instantly
 - Backend must be running for searches to work
 
-### Production Build
+### Production Build 
 
 ```bash
 cd frontend
@@ -208,8 +205,8 @@ npm run build
 Creates `frontend/dist/` with static files. Backend serves these in production via FastAPI's `StaticFiles`.
 
 ### Learn More
-
-See `frontend/FRONTEND_GUIDE.md` for:
+I am by no means a frontend developer but Claude Code here is helping out a brother. But to have some context on what's happening,
+check out `frontend/FRONTEND_GUIDE.md` for:
 - Component architecture explanation
 - State flow diagrams
 - How React/Chakra UI work together
